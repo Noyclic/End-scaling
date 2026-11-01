@@ -1,0 +1,46 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust app and native core
+        run: cargo build --manifest-path app/Cargo.toml --release
+
+      - name: Build native smoke tests
+        run: cmake --build build/native --config Release
+
+      - name: Test D3D11 shaders on WARP
+        run: ctest --test-dir build/native -C Release --output-on-failure
+
+      - name: Package app
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item app/target/release/EndScaling.exe dist/
+          Copy-Item app/target/release/shaders dist/shaders -Recurse
+          Copy-Item app/target/release/third_party dist/third_party -Recurse
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: End-scaling-Windows
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
