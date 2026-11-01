@@ -13,7 +13,7 @@ namespace end_scaling {
 namespace {
 
 struct alignas(16) EasuConstants { std::uint32_t con[4][4]{}; };
-struct alignas(16) RcasConstants { std::uint32_t con[4]{}; };
+struct alignas(16) RcasConstants { std::uint32_t con[4][4]{}; };
 
 std::uint32_t as_uint(float value) noexcept {
     return std::bit_cast<std::uint32_t>(value);
@@ -259,7 +259,7 @@ HRESULT D3D11Scaler::draw(ID3D11ShaderResourceView* source,
 
     const float stops = std::clamp(rcasSharpnessStops, 0.0f, 2.0f);
     RcasConstants rcas{};
-    rcas.con[0] = as_uint(std::exp2(-stops));
+    rcas.con[0][0] = as_uint(std::exp2(-stops));
     context_->UpdateSubresource(rcasConstants_.Get(), 0, nullptr, &rcas, 0, 0);
 
     return draw_pass(intermediateSrv_.Get(), destination, rcasPixelShader_.Get(),

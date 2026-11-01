@@ -62,6 +62,7 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=d3d11");
     println!("cargo:rustc-link-lib=dylib=dxgi");
     println!("cargo:rustc-link-lib=dylib=d3dcompiler");
+    println!("cargo:rustc-link-lib=dylib=windowsapp");
 
     // Keep runtime shader lookup independent of the current working directory.
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));

@@ -3,38 +3,53 @@
 #[cfg(windows)]
 mod app {
     use std::{
-        env, ffi::OsStr, fs, os::windows::ffi::OsStrExt, path::PathBuf,
-        ptr::{null, null_mut},
+        env, ffi::{c_void, OsStr}, fs, os::windows::ffi::OsStrExt,
+        path::PathBuf, ptr::{null, null_mut},
     };
 
     use windows_sys::Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
-        Graphics::Gdi::{GetStockObject, HBRUSH, WHITE_BRUSH},
-        System::LibraryLoader::GetModuleHandleW,
+        Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Graphics::Gdi::{GetStockObject, HBRUSH, BLACK_BRUSH, WHITE_BRUSH},
+        System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentProcessId},
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetSystemMetrics,
-            PostQuitMessage, RegisterClassW, SendMessageW, SetWindowTextW, ShowWindow,
-            TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG,
-            SW_SHOW, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_OVERLAPPED,
-            WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL, WM_COMMAND, WM_CREATE,
-            WM_DESTROY, SM_CXSCREEN, SM_CYSCREEN,
+            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows,
+            GetClientRect, GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
+            GetWindowThreadProcessId, IsWindow, IsWindowVisible, PostQuitMessage, RegisterClassW,
+            SendMessageW, SetWindowTextW, ShowWindow, TranslateMessage,
+            CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, SW_HIDE, SW_SHOW, WNDCLASSW,
+            WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_MAXIMIZEBOX, WS_OVERLAPPED,
+            WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
+            WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, SM_CXSCREEN, SM_CYSCREEN,
         },
     };
 
     const CB_ADDSTRING: u32 = 0x0143;
     const CB_GETCURSEL: u32 = 0x0147;
     const CB_SETCURSEL: u32 = 0x014E;
+    const CB_GETITEMDATA: u32 = 0x0150;
+    const CB_SETITEMDATA: u32 = 0x0151;
+    const CB_RESETCONTENT: u32 = 0x014B;
     const CBN_SELCHANGE: u16 = 1;
     const CBS_DROPDOWNLIST: u32 = 0x0003;
     const BS_DEFPUSHBUTTON: u32 = 0x0001;
-    const BUTTON_ID: usize = 1001;
+
+    const ID_PROFILE: usize = 1001;
+    const ID_SAVE: usize = 1002;
+    const ID_WINDOW_LIST: usize = 1003;
+    const ID_REFRESH: usize = 1004;
+    const ID_START: usize = 1005;
+    const ID_STOP: usize = 1006;
 
     static mut INSTANCE: HINSTANCE = null_mut();
+    static mut MAIN_HWND: HWND = null_mut();
+    static mut PREVIEW_HWND: HWND = null_mut();
     static mut PROFILE_COMBO: HWND = null_mut();
+    static mut WINDOW_COMBO: HWND = null_mut();
     static mut RESOLUTION_LABEL: HWND = null_mut();
     static mut GPU_LABEL: HWND = null_mut();
     static mut STATUS_LABEL: HWND = null_mut();
     static mut SELECTED_PROFILE: i32 = 1;
+    static mut CAPTURE_HANDLE: *mut c_void = null_mut();
 
     #[link(name = "end_scaling_core", kind = "static")]
     unsafe extern "C" {
@@ -47,6 +62,22 @@ mod app {
             error_capacity: i32,
             feature_level: *mut u32,
         ) -> i32;
+
+        fn es_capture_start(
+            source_window: HWND,
+            output_window: HWND,
+            mode: u32,
+            shader_path: *const u16,
+            error_text: *mut u16,
+            error_capacity: i32,
+        ) -> *mut c_void;
+
+        fn es_capture_stop(handle: *mut c_void);
+    }
+
+    struct WindowEntry {
+        hwnd: HWND,
+        title: String,
     }
 
     fn wide(value: &str) -> Vec<u16> {
@@ -79,22 +110,43 @@ mod app {
         if current < 0 { SELECTED_PROFILE } else { current }
     }
 
+    unsafe fn selected_source_window() -> HWND {
+        if WINDOW_COMBO.is_null() {
+            return null_mut();
+        }
+        let index = SendMessageW(WINDOW_COMBO, CB_GETCURSEL, 0, 0);
+        if index < 0 {
+            return null_mut();
+        }
+        SendMessageW(WINDOW_COMBO, CB_GETITEMDATA, index as WPARAM, 0) as HWND
+    }
+
     unsafe fn update_resolution_label() {
-        let index = selected_profile();
-        let screen_width = GetSystemMetrics(SM_CXSCREEN).max(1) as f32;
-        let screen_height = GetSystemMetrics(SM_CYSCREEN).max(1) as f32;
-        let scale = profile_scale(index);
-        let width = ((screen_width * scale) as u32 / 8) * 8;
-        let height = ((screen_height * scale) as u32 / 8) * 8;
+        let source = selected_source_window();
+        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let (width, height) = if !source.is_null() && IsWindow(source) != 0 &&
+            GetClientRect(source, &mut rect) != 0 &&
+            rect.right > rect.left && rect.bottom > rect.top {
+            ((rect.right - rect.left) as u32, (rect.bottom - rect.top) as u32)
+        } else {
+            (
+                GetSystemMetrics(SM_CXSCREEN).max(1) as u32,
+                GetSystemMetrics(SM_CYSCREEN).max(1) as u32,
+            )
+        };
+        let scale = profile_scale(selected_profile());
+        let scaled_width = (((width as f32 * scale) as u32) / 8) * 8;
+        let scaled_height = (((height as f32 * scale) as u32) / 8) * 8;
         let label = wide(&format!(
-            "Рекомендуемое разрешение игры: {width} × {height}  (экран {screen_width:.0} × {screen_height:.0})"
+            "Рекомендуемое разрешение игры: {scaled_width} × {scaled_height}  (исходное: {width} × {height})"
         ));
         SetWindowTextW(RESOLUTION_LABEL, label.as_ptr());
     }
 
     fn settings_path() -> Option<PathBuf> {
-        let app_data = env::var_os("APPDATA")?;
-        Some(PathBuf::from(app_data).join("EndScaling").join("settings.ini"))
+        Some(PathBuf::from(env::var_os("APPDATA")?)
+            .join("EndScaling")
+            .join("settings.ini"))
     }
 
     fn load_profile() -> i32 {
@@ -112,15 +164,21 @@ mod app {
         1
     }
 
+    unsafe fn set_status(message: &str) {
+        if !STATUS_LABEL.is_null() {
+            SetWindowTextW(STATUS_LABEL, wide(message).as_ptr());
+        }
+    }
+
     unsafe fn save_profile() {
         let index = selected_profile();
         let Some(path) = settings_path() else {
-            SetWindowTextW(STATUS_LABEL, wide("Не удалось найти папку APPDATA.").as_ptr());
+            set_status("Не удалось найти папку APPDATA.");
             return;
         };
         let Some(parent) = path.parent() else { return; };
         if let Err(error) = fs::create_dir_all(parent) {
-            SetWindowTextW(STATUS_LABEL, wide(&format!("Ошибка папки настроек: {error}")).as_ptr());
+            set_status(&format!("Ошибка папки настроек: {error}"));
             return;
         }
 
@@ -132,32 +190,30 @@ mod app {
         match fs::write(&path, contents) {
             Ok(()) => {
                 SELECTED_PROFILE = index;
-                SetWindowTextW(STATUS_LABEL, wide("Профиль сохранён. Разрешение игры нужно изменить вручную.").as_ptr());
+                set_status("Профиль сохранён. Разрешение игры нужно выставить вручную.");
                 update_resolution_label();
             }
-            Err(error) => {
-                SetWindowTextW(STATUS_LABEL, wide(&format!("Не удалось сохранить настройки: {error}")).as_ptr());
-            }
+            Err(error) => set_status(&format!("Не удалось сохранить настройки: {error}")),
         }
     }
 
+    unsafe fn current_shader_path() -> Option<Vec<u16>> {
+        let exe = env::current_exe().ok()?;
+        let path = exe.parent()?.join("shaders").join("fsr1.hlsl");
+        Some(path.as_os_str().encode_wide().chain(Some(0)).collect())
+    }
+
     unsafe fn probe_gpu() {
-        let exe = match env::current_exe() {
-            Ok(value) => value,
-            Err(error) => {
-                SetWindowTextW(GPU_LABEL, wide(&format!("D3D11: путь приложения недоступен: {error}")).as_ptr());
-                return;
-            }
+        let Some(shader_path) = current_shader_path() else {
+            SetWindowTextW(GPU_LABEL, wide("Не удалось определить путь к шейдерам.").as_ptr());
+            return;
         };
-        let Some(parent) = exe.parent() else { return; };
-        let shader_path = parent.join("shaders").join("fsr1.hlsl");
-        let shader_wide = shader_path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
 
         let mut gpu_name = [0u16; 128];
         let mut error_text = [0u16; 512];
         let mut feature_level = 0u32;
         let ok = es_probe_d3d11_gpu(
-            shader_wide.as_ptr(),
+            shader_path.as_ptr(),
             gpu_name.as_mut_ptr(),
             gpu_name.len() as i32,
             error_text.as_mut_ptr(),
@@ -172,52 +228,225 @@ mod app {
                 0xA000 => "10.0",
                 _ => "unknown",
             };
-            format!("GPU: {}  •  Direct3D {level}  •  FSR shaders готовы", from_wide(&gpu_name))
+            format!("GPU: {}  •  Direct3D {level}  •  FSR готов", from_wide(&gpu_name))
         } else {
             format!("Графическое ядро не готово: {}", from_wide(&error_text))
         };
         SetWindowTextW(GPU_LABEL, wide(&status).as_ptr());
     }
 
-    unsafe fn create_label(parent: HWND, text: &str, x: i32, y: i32, width: i32, height: i32) -> HWND {
+    unsafe fn create_label(parent: HWND, text: &str, x: i32, y: i32, w: i32, h: i32) -> HWND {
         CreateWindowExW(
             0, wide("STATIC").as_ptr(), wide(text).as_ptr(),
-            WS_CHILD | WS_VISIBLE, x, y, width, height,
+            WS_CHILD | WS_VISIBLE, x, y, w, h,
             parent, null_mut(), INSTANCE, null(),
         )
     }
 
-    unsafe fn create_controls(parent: HWND) {
-        create_label(parent, "END SCALING", 24, 20, 450, 34);
-        GPU_LABEL = create_label(parent, "Проверка графического адаптера...", 24, 62, 465, 44);
-        create_label(parent, "Профиль масштабирования", 24, 128, 300, 22);
+    unsafe fn create_button(parent: HWND, text: &str, id: usize,
+                            x: i32, y: i32, w: i32, h: i32, primary: bool) -> HWND {
+        let style = WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+            if primary { BS_DEFPUSHBUTTON } else { 0 };
+        CreateWindowExW(
+            0, wide("BUTTON").as_ptr(), wide(text).as_ptr(),
+            style, x, y, w, h, parent, id as _, INSTANCE, null(),
+        )
+    }
 
+    unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        if hwnd.is_null() || IsWindowVisible(hwnd) == 0 || hwnd == MAIN_HWND {
+            return 1;
+        }
+
+        let mut process_id = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut process_id);
+        if process_id == GetCurrentProcessId() {
+            return 1;
+        }
+
+        let length = GetWindowTextLengthW(hwnd);
+        if length <= 0 || length > 1024 {
+            return 1;
+        }
+        let mut title = vec![0u16; length as usize + 1];
+        let copied = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32);
+        if copied <= 0 {
+            return 1;
+        }
+
+        title.truncate(copied as usize);
+        let title = String::from_utf16_lossy(&title);
+        if title.trim().is_empty() {
+            return 1;
+        }
+
+        let entries = &mut *(lparam as *mut Vec<WindowEntry>);
+        entries.push(WindowEntry { hwnd, title });
+        1
+    }
+
+    unsafe fn refresh_window_list() {
+        if WINDOW_COMBO.is_null() {
+            return;
+        }
+        SendMessageW(WINDOW_COMBO, CB_RESETCONTENT, 0, 0);
+        let mut windows = Vec::<WindowEntry>::new();
+        EnumWindows(Some(enum_window_callback), &mut windows as *mut _ as LPARAM);
+
+        for entry in windows {
+            let display = wide(&entry.title);
+            let index = SendMessageW(WINDOW_COMBO, CB_ADDSTRING, 0, display.as_ptr() as LPARAM);
+            if index >= 0 {
+                SendMessageW(
+                    WINDOW_COMBO, CB_SETITEMDATA,
+                    index as WPARAM, entry.hwnd as LPARAM,
+                );
+            }
+        }
+
+        if SendMessageW(WINDOW_COMBO, CB_GETCURSEL, 0, 0) < 0 {
+            SendMessageW(WINDOW_COMBO, CB_SETCURSEL, 0, 0);
+        }
+        update_resolution_label();
+        set_status("Список окон обновлён. Выбери игру или приложение.");
+    }
+
+    unsafe fn stop_capture_only() {
+        if !CAPTURE_HANDLE.is_null() {
+            es_capture_stop(CAPTURE_HANDLE);
+            CAPTURE_HANDLE = null_mut();
+        }
+    }
+
+    unsafe extern "system" fn preview_window_proc(
+        hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM,
+    ) -> LRESULT {
+        match message {
+            WM_CLOSE => {
+                stop_capture_only();
+                DestroyWindow(hwnd);
+                0
+            }
+            WM_DESTROY => {
+                if PREVIEW_HWND == hwnd {
+                    PREVIEW_HWND = null_mut();
+                }
+                0
+            }
+            _ => DefWindowProcW(hwnd, message, wparam, lparam),
+        }
+    }
+
+    unsafe fn create_preview_window() -> HWND {
+        let class_name = wide("EndScalingPreviewWindow");
+        let class = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(preview_window_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: INSTANCE,
+            hIcon: null_mut(),
+            hCursor: null_mut(),
+            hbrBackground: GetStockObject(BLACK_BRUSH) as HBRUSH,
+            lpszMenuName: null(),
+            lpszClassName: class_name.as_ptr(),
+        };
+        RegisterClassW(&class);
+
+        let title = wide("End-scaling — предпросмотр");
+        let hwnd = CreateWindowExW(
+            0, class_name.as_ptr(), title.as_ptr(),
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
+                WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE,
+            CW_USEDEFAULT, CW_USEDEFAULT, 960, 540,
+            null_mut(), null_mut(), INSTANCE, null(),
+        );
+        if !hwnd.is_null() {
+            ShowWindow(hwnd, SW_SHOW);
+        }
+        hwnd
+    }
+
+    unsafe fn start_capture() {
+        let source = selected_source_window();
+        if source.is_null() || IsWindow(source) == 0 {
+            set_status("Сначала выбери окно игры и обнови список, если его нет.");
+            return;
+        }
+
+        stop_capture_only();
+        if !PREVIEW_HWND.is_null() && IsWindow(PREVIEW_HWND) != 0 {
+            DestroyWindow(PREVIEW_HWND);
+        }
+        PREVIEW_HWND = create_preview_window();
+        if PREVIEW_HWND.is_null() {
+            set_status("Не удалось создать окно предпросмотра.");
+            return;
+        }
+
+        let Some(shader_path) = current_shader_path() else {
+            set_status("Не найден файл шейдера FSR.");
+            DestroyWindow(PREVIEW_HWND);
+            return;
+        };
+        let mut error_text = [0u16; 512];
+        CAPTURE_HANDLE = es_capture_start(
+            source, PREVIEW_HWND, selected_profile() as u32,
+            shader_path.as_ptr(), error_text.as_mut_ptr(), error_text.len() as i32,
+        );
+
+        if CAPTURE_HANDLE.is_null() {
+            set_status(&format!("Не удалось запустить захват: {}", from_wide(&error_text)));
+            DestroyWindow(PREVIEW_HWND);
+            return;
+        }
+
+        set_status("Захват запущен. Не сворачивай игру; это пока окно предпросмотра.");
+    }
+
+    unsafe fn stop_preview() {
+        stop_capture_only();
+        if !PREVIEW_HWND.is_null() && IsWindow(PREVIEW_HWND) != 0 {
+            let hwnd = PREVIEW_HWND;
+            ShowWindow(hwnd, SW_HIDE);
+            DestroyWindow(hwnd);
+        }
+        set_status("Захват остановлен.");
+    }
+
+    unsafe fn create_controls(parent: HWND) {
+        create_label(parent, "END SCALING", 24, 18, 450, 32);
+        GPU_LABEL = create_label(parent, "Проверка графического адаптера...", 24, 54, 500, 42);
+
+        create_label(parent, "Профиль масштабирования", 24, 108, 260, 22);
         PROFILE_COMBO = CreateWindowExW(
             0, wide("COMBOBOX").as_ptr(), wide("").as_ptr(),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
-            24, 154, 300, 150, parent, null_mut(), INSTANCE, null(),
+            24, 132, 300, 150, parent, ID_PROFILE as _, INSTANCE, null(),
         );
-
         for value in ["Quality — качество", "Balanced — баланс", "Performance — минимум нагрузки"] {
-            let item = wide(value);
-            SendMessageW(PROFILE_COMBO, CB_ADDSTRING, 0, item.as_ptr() as LPARAM);
+            SendMessageW(PROFILE_COMBO, CB_ADDSTRING, 0, wide(value).as_ptr() as LPARAM);
         }
         SendMessageW(PROFILE_COMBO, CB_SETCURSEL, SELECTED_PROFILE as WPARAM, 0);
+        RESOLUTION_LABEL = create_label(parent, "", 24, 165, 510, 30);
+        create_button(parent, "Сохранить профиль", ID_SAVE, 24, 198, 180, 32, true);
+        STATUS_LABEL = create_label(parent, "Пока не выбран источник изображения.", 24, 238, 510, 36);
 
-        RESOLUTION_LABEL = create_label(parent, "", 24, 194, 465, 34);
-        let button_text = wide("Сохранить профиль");
-        CreateWindowExW(
-            0, wide("BUTTON").as_ptr(), button_text.as_ptr(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-            24, 236, 180, 34, parent, BUTTON_ID as _, INSTANCE, null(),
+        create_label(parent, "Окно игры или приложения для захвата", 24, 292, 340, 22);
+        WINDOW_COMBO = CreateWindowExW(
+            0, wide("COMBOBOX").as_ptr(), wide("").as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+            24, 317, 360, 180, parent, ID_WINDOW_LIST as _, INSTANCE, null(),
         );
-        STATUS_LABEL = create_label(parent, "Настройки ещё не сохранены.", 24, 280, 465, 34);
+        create_button(parent, "Обновить", ID_REFRESH, 396, 317, 120, 32, false);
+        create_button(parent, "Начать предпросмотр", ID_START, 24, 365, 225, 36, true);
+        create_button(parent, "Остановить", ID_STOP, 264, 365, 140, 36, false);
 
         probe_gpu();
-        update_resolution_label();
+        refresh_window_list();
     }
 
-    unsafe extern "system" fn window_proc(
+    unsafe extern "system" fn main_window_proc(
         hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM,
     ) -> LRESULT {
         match message {
@@ -226,19 +455,25 @@ mod app {
                 0
             }
             WM_COMMAND => {
-                let control_id = (wparam & 0xffff) as usize;
+                let id = (wparam & 0xffff) as usize;
                 let notification = ((wparam >> 16) & 0xffff) as u16;
-                if control_id == BUTTON_ID {
-                    save_profile();
-                    return 0;
+                match id {
+                    ID_SAVE => { save_profile(); 0 }
+                    ID_REFRESH => { refresh_window_list(); 0 }
+                    ID_START => { start_capture(); 0 }
+                    ID_STOP => { stop_preview(); 0 }
+                    ID_PROFILE | ID_WINDOW_LIST if notification == CBN_SELCHANGE => {
+                        update_resolution_label();
+                        0
+                    }
+                    _ => DefWindowProcW(hwnd, message, wparam, lparam),
                 }
-                if PROFILE_COMBO != null_mut() && notification == CBN_SELCHANGE {
-                    update_resolution_label();
-                    return 0;
-                }
-                DefWindowProcW(hwnd, message, wparam, lparam)
             }
             WM_DESTROY => {
+                stop_capture_only();
+                if !PREVIEW_HWND.is_null() && IsWindow(PREVIEW_HWND) != 0 {
+                    DestroyWindow(PREVIEW_HWND);
+                }
                 PostQuitMessage(0);
                 0
             }
@@ -250,12 +485,12 @@ mod app {
         unsafe {
             SELECTED_PROFILE = load_profile();
             INSTANCE = GetModuleHandleW(null());
-            let class_name = wide("EndScalingWindow");
+            let class_name = wide("EndScalingMainWindow");
             let title = wide("End Scaling");
 
             let class = WNDCLASSW {
                 style: CS_HREDRAW | CS_VREDRAW,
-                lpfnWndProc: Some(window_proc),
+                lpfnWndProc: Some(main_window_proc),
                 cbClsExtra: 0,
                 cbWndExtra: 0,
                 hInstance: INSTANCE,
@@ -267,17 +502,17 @@ mod app {
             };
             RegisterClassW(&class);
 
-            let hwnd = CreateWindowExW(
+            MAIN_HWND = CreateWindowExW(
                 0, class_name.as_ptr(), title.as_ptr(),
-                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE,
-                CW_USEDEFAULT, CW_USEDEFAULT, 540, 370,
+                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
+                    WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE,
+                CW_USEDEFAULT, CW_USEDEFAULT, 570, 465,
                 null_mut(), null_mut(), INSTANCE, null(),
             );
-            if hwnd.is_null() {
+            if MAIN_HWND.is_null() {
                 return;
             }
-
-            ShowWindow(hwnd, SW_SHOW);
+            ShowWindow(MAIN_HWND, SW_SHOW);
 
             let mut message: MSG = std::mem::zeroed();
             while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
