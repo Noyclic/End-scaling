@@ -14,7 +14,7 @@ mod app {
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetSystemMetrics,
             PostQuitMessage, RegisterClassW, SendMessageW, SetWindowTextW, ShowWindow,
-            TranslateMessage, UpdateWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG,
+            TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG,
             SW_SHOW, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_OVERLAPPED,
             WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL, WM_COMMAND, WM_CREATE,
             WM_DESTROY, SM_CXSCREEN, SM_CYSCREEN,
@@ -278,7 +278,6 @@ mod app {
             }
 
             ShowWindow(hwnd, SW_SHOW);
-            UpdateWindow(hwnd);
 
             let mut message: MSG = std::mem::zeroed();
             while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
