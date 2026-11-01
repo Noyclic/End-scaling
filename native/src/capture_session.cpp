@@ -15,7 +15,6 @@
 #include <wrl/client.h>
 
 #include <algorithm>
-#include <array>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -226,28 +225,6 @@ private:
         return create_back_buffer();
     }
 
-    HRESULT get_source_view(ID3D11Texture2D* texture,
-                            ID3D11ShaderResourceView** result) {
-        for (std::size_t i = 0; i < textureCache_.size(); ++i) {
-            if (textureCache_[i].Get() == texture && viewCache_[i]) {
-                *result = viewCache_[i].Get();
-                (*result)->AddRef();
-                return S_OK;
-            }
-        }
-
-        const auto slot = cacheCursor_++ % textureCache_.size();
-        textureCache_[slot] = texture;
-        viewCache_[slot].Reset();
-        HRESULT hr = device_->CreateShaderResourceView(texture, nullptr, &viewCache_[slot]);
-        if (FAILED(hr)) {
-            textureCache_[slot].Reset();
-            return hr;
-        }
-        *result = viewCache_[slot].Get();
-        (*result)->AddRef();
-        return S_OK;
-    }
 
     void on_frame(Direct3D11CaptureFramePool const& sender) noexcept {
         std::lock_guard<std::mutex> guard(mutex_);
@@ -269,9 +246,6 @@ private:
             if (content.Width != size_.Width || content.Height != size_.Height) {
                 size_ = content;
                 frame = nullptr;
-                for (auto& view : viewCache_) view.Reset();
-                for (auto& texture : textureCache_) texture.Reset();
-                cacheCursor_ = 0;
                 framePool_.Recreate(winrtDevice_,
                     DirectXPixelFormat::B8G8R8A8UIntNormalized,
                     static_cast<int>(kBufferCount), size_);
@@ -286,7 +260,9 @@ private:
             if (FAILED(hr)) return;
 
             ComPtr<ID3D11ShaderResourceView> sourceView;
-            if (FAILED(get_source_view(frameTexture.Get(), &sourceView))) return;
+            // The WGC surface is only used while its frame is checked out.
+            // Do not keep SRVs to frame-pool textures after returning a frame.
+            if (FAILED(device_->CreateShaderResourceView(frameTexture.Get(), nullptr, &sourceView))) return;
             if (FAILED(resize_output())) return;
 
             hr = scaler_.draw(sourceView.Get(), backBuffer_.Get(), mode_,
@@ -330,8 +306,6 @@ private:
         framePool_ = nullptr;
         item_ = nullptr;
         winrtDevice_ = nullptr;
-        for (auto& view : viewCache_) view.Reset();
-        for (auto& texture : textureCache_) texture.Reset();
         backBuffer_.Reset();
         swapChain_.Reset();
         scaler_.reset();
@@ -351,10 +325,6 @@ private:
     D3D11Scaler scaler_;
     ComPtr<IDXGISwapChain1> swapChain_;
     ComPtr<ID3D11RenderTargetView> backBuffer_;
-    std::array<ComPtr<ID3D11Texture2D>, 2> textureCache_{};
-    std::array<ComPtr<ID3D11ShaderResourceView>, 2> viewCache_{};
-    std::size_t cacheCursor_ = 0;
-
     IDirect3DDevice winrtDevice_{nullptr};
     GraphicsCaptureItem item_{nullptr};
     Direct3D11CaptureFramePool framePool_{nullptr};
