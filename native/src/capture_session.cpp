@@ -152,12 +152,8 @@ private:
             D3D11_SDK_VERSION, &device_, &selected, &context_);
         if (FAILED(hr)) return hr;
 
-        // The frame callback runs on a WinRT worker thread. Guard the immediate
-        // context because device setup/teardown may happen on the UI thread.
-        ComPtr<ID3D11Multithread> multithread;
-        if (SUCCEEDED(context_.As(&multithread))) {
-            multithread->SetMultithreadProtected(TRUE);
-        }
+        // All immediate-context work is serialized by mutex_; avoid the extra
+        // per-call overhead of enabling D3D11's multithread protection layer.
         return S_OK;
     }
 
@@ -282,7 +278,7 @@ private:
                 return;
             }
 
-            auto dxgiAccess = frame.Surface().as<IDirect3DDxgiInterfaceAccess>();
+            auto dxgiAccess = frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
             ComPtr<ID3D11Texture2D> frameTexture;
             HRESULT hr = dxgiAccess->GetInterface(
                 __uuidof(ID3D11Texture2D),
