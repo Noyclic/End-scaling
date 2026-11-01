@@ -14,12 +14,12 @@ mod app {
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows,
             GetClientRect, GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
-            GetWindowThreadProcessId, IsWindow, IsWindowVisible, PostQuitMessage, RegisterClassW,
-            SendMessageW, SetWindowTextW, ShowWindow, TranslateMessage,
+            GetWindowThreadProcessId, IsWindow, IsWindowVisible, KillTimer, PostQuitMessage,
+            RegisterClassW, SendMessageW, SetTimer, SetWindowTextW, ShowWindow, TranslateMessage,
             CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, SW_HIDE, SW_SHOW, WNDCLASSW,
             WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_MAXIMIZEBOX, WS_OVERLAPPED,
             WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
-            WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, SM_CXSCREEN, SM_CYSCREEN,
+            WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_TIMER, SM_CXSCREEN, SM_CYSCREEN,
         },
     };
 
@@ -73,6 +73,12 @@ mod app {
         ) -> *mut c_void;
 
         fn es_capture_stop(handle: *mut c_void);
+        fn es_capture_get_stats(
+            handle: *mut c_void,
+            fps: *mut f64,
+            submit_ms: *mut f64,
+            frames: *mut u64,
+        ) -> i32;
     }
 
     struct WindowEntry {
@@ -312,9 +318,31 @@ mod app {
     }
 
     unsafe fn stop_capture_only() {
+        if !MAIN_HWND.is_null() {
+            KillTimer(MAIN_HWND, 1);
+        }
         if !CAPTURE_HANDLE.is_null() {
             es_capture_stop(CAPTURE_HANDLE);
             CAPTURE_HANDLE = null_mut();
+        }
+    }
+
+    unsafe fn update_capture_stats() {
+        if CAPTURE_HANDLE.is_null() {
+            return;
+        }
+        let mut preview_fps = 0.0f64;
+        let mut submit_ms = 0.0f64;
+        let mut frames = 0u64;
+        if es_capture_get_stats(
+            CAPTURE_HANDLE,
+            &mut preview_fps,
+            &mut submit_ms,
+            &mut frames,
+        ) != 0 {
+            set_status(&format!(
+                "Предпросмотр: {preview_fps:.1} FPS  •  CPU submit: {submit_ms:.2} ms  •  кадров: {frames}"
+            ));
         }
     }
 
@@ -401,7 +429,8 @@ mod app {
             return;
         }
 
-        set_status("Захват запущен. Не сворачивай игру; это пока окно предпросмотра.");
+        SetTimer(MAIN_HWND, 1, 1000, None);
+        set_status("Захват запущен. Ниже будет FPS предпросмотра, а не самой игры.");
     }
 
     unsafe fn stop_preview() {
@@ -452,6 +481,10 @@ mod app {
         match message {
             WM_CREATE => {
                 create_controls(hwnd);
+                0
+            }
+            WM_TIMER if wparam == 1 => {
+                update_capture_stats();
                 0
             }
             WM_COMMAND => {

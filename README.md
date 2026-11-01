@@ -2,7 +2,7 @@
 
 A lightweight Windows game-upscaling prototype built as a Rust application with a native C++ / Direct3D 11 graphics core.
 
-> **Current state:** the first Windows Graphics Capture → Direct3D 11 scaling → preview path is implemented and builds on Windows. It captures a selected application window into a two-buffer GPU frame pool, scales incoming frames, and presents them in a separate preview window. This is a working engineering milestone, not yet a game-FPS booster: the preview does not replace the original game window or forward mouse/keyboard input, so the game still renders its own frames at its normal rate.
+> **Current state:** the Windows Graphics Capture → Direct3D 11 scaling → preview path is implemented and builds on Windows. It captures a selected application window into a two-buffer GPU frame pool, scales incoming frames, and presents them in a separate preview window. This is an engineering preview, not yet a game-FPS booster: it does not replace the original game window or forward mouse/keyboard input, so the game still renders its own frames at its normal rate.
 
 ## Design goals
 
@@ -10,7 +10,7 @@ A lightweight Windows game-upscaling prototype built as a Rust application with 
 - Rust owns settings, window selection, and application orchestration.
 - C++ owns capture, Direct3D 11 resources, and the per-frame scaling path.
 - Hardware D3D11 only. No silent WARP/CPU fallback in the app.
-- Two capture buffers, latest-frame processing, no CPU readback, and no per-frame texture allocations other than the short-lived view for the current capture frame.
+- Two capture buffers, latest-frame processing, no CPU readback, and no retained references to returned capture frames.
 - GPU resources are reused; output and intermediate textures are recreated only when their dimensions change.
 
 ## Current pipeline
@@ -35,19 +35,29 @@ AMD FSR 1 source is vendored from GPUOpen-Effects/FidelityFX-FSR under its MIT l
 
 FSR 1 is a spatial upscaler, not frame generation. It can help only when the game itself renders fewer pixels and the app's capture/presentation overhead is lower than the cost saved by that lower render resolution.
 
+## Preview diagnostics
+
+While preview is running, the main window reports:
+
+- **Preview FPS:** successfully presented preview frames divided by elapsed capture-session time. This is not the game's own FPS.
+- **CPU submit:** CPU wall-clock time spent in the scaler draw call and the non-blocking Present call. This is not GPU execution time and does not include the wait for GPU completion.
+- **Frames:** total preview frames successfully presented in this session.
+
+These counters are intentionally lightweight and use relaxed atomics; they do not read back GPU resources or add a sampling thread.
+
 ## Build on Windows
 
 Requirements:
 
 - Windows 10 version 1903 (build 18362) or newer; Windows 11 recommended.
-- Visual Studio 2022 or newer Build Tools with **Desktop development with C++**.
+- Visual Studio 2022 or newer Build Tools with Desktop development with C++.
 - Windows 10/11 SDK with C++/WinRT headers.
 - CMake 3.24+.
 - Rust stable toolchain.
 
 Run from PowerShell at the repository root:
 
-    .\scripts\build.ps1
+    .\\scripts\\build.ps1
 
 The packaged application is written to dist/. GitHub Actions builds on pushes to main, compiles the Rust app and C++ core, compiles/tests the D3D11 shader pipeline on WARP, and uploads an End-scaling-Windows artifact.
 
@@ -57,7 +67,7 @@ The packaged application is written to dist/. GitHub Actions builds on pushes to
 - The window list enumerates visible top-level windows outside End-scaling itself.
 - The selected window can be captured into a separate, resizable preview.
 - The selected profile generates a suggested lower in-game resolution based on the selected window's client size.
-- Profile selection is saved under %APPDATA%\EndScaling\settings.ini.
+- Profile selection is saved under %APPDATA%\\EndScaling\\settings.ini.
 
 The suggested resolution is informational only; the app does not change game settings or inject into games.
 

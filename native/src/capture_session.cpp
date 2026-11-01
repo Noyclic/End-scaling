@@ -15,6 +15,8 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -109,6 +111,9 @@ public:
                 });
             hasHandler_ = true;
 
+            renderedFrames_.store(0, std::memory_order_relaxed);
+            lastSubmitMs_.store(0.0, std::memory_order_relaxed);
+            captureStartedAt_ = std::chrono::steady_clock::now();
             running_ = true;
             session_.StartCapture();
             return S_OK;
@@ -134,6 +139,15 @@ public:
         catch (...) {
             stop_noexcept();
         }
+    }
+
+    void get_stats(double* fps, double* lastSubmitMs, std::uint64_t* frames) const noexcept {
+        const std::uint64_t count = renderedFrames_.load(std::memory_order_relaxed);
+        const double elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - captureStartedAt_).count();
+        if (fps) *fps = elapsed > 0.0 ? static_cast<double>(count) / elapsed : 0.0;
+        if (lastSubmitMs) *lastSubmitMs = lastSubmitMs_.load(std::memory_order_relaxed);
+        if (frames) *frames = count;
     }
 
 private:
@@ -265,14 +279,24 @@ private:
             if (FAILED(device_->CreateShaderResourceView(frameTexture.Get(), nullptr, &sourceView))) return;
             if (FAILED(resize_output())) return;
 
+            const auto submitStart = std::chrono::steady_clock::now();
             hr = scaler_.draw(sourceView.Get(), backBuffer_.Get(), mode_,
                 mode_ == ScaleMode::quality ? 0.0f : 1.5f);
             if (FAILED(hr)) return;
 
             const HRESULT present = swapChain_->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
-            if (present == DXGI_ERROR_DEVICE_REMOVED || present == DXGI_ERROR_DEVICE_RESET) {
-                running_ = false;
+            if (present == DXGI_ERROR_WAS_STILL_DRAWING) return;
+            if (FAILED(present)) {
+                if (present == DXGI_ERROR_DEVICE_REMOVED || present == DXGI_ERROR_DEVICE_RESET) {
+                    running_ = false;
+                }
+                return;
             }
+
+            const double elapsedMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - submitStart).count();
+            lastSubmitMs_.store(elapsedMs, std::memory_order_relaxed);
+            renderedFrames_.fetch_add(1, std::memory_order_relaxed);
         }
         catch (...) {
             // Never unwind C++ exceptions through a WinRT event callback.
@@ -319,6 +343,9 @@ private:
     bool running_ = false;
     bool hasHandler_ = false;
     std::mutex mutex_;
+    std::chrono::steady_clock::time_point captureStartedAt_{};
+    std::atomic<std::uint64_t> renderedFrames_{0};
+    std::atomic<double> lastSubmitMs_{0.0};
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
@@ -351,6 +378,16 @@ void* start_window_capture(HWND source, HWND output, std::uint32_t mode,
     }
 }
 
+void get_window_capture_stats(void* handle, double* fps,
+                               double* lastSubmitMs, std::uint64_t* frames) noexcept {
+    if (fps) *fps = 0.0;
+    if (lastSubmitMs) *lastSubmitMs = 0.0;
+    if (frames) *frames = 0;
+    if (!handle) return;
+    auto* capture = static_cast<std::shared_ptr<WindowCapture>*>(handle);
+    (*capture)->get_stats(fps, lastSubmitMs, frames);
+}
+
 void stop_window_capture(void* handle) noexcept {
     if (!handle) return;
     auto* capture = static_cast<std::shared_ptr<WindowCapture>*>(handle);
@@ -369,6 +406,12 @@ extern "C" __declspec(dllexport) void* __cdecl es_capture_start(
         wcsncpy_s(errorText, static_cast<std::size_t>(errorCapacity), error.c_str(), _TRUNCATE);
     }
     return handle;
+}
+
+extern "C" __declspec(dllexport) int __cdecl es_capture_get_stats(
+    void* handle, double* fps, double* lastSubmitMs, std::uint64_t* frames) noexcept {
+    end_scaling::get_window_capture_stats(handle, fps, lastSubmitMs, frames);
+    return handle != nullptr ? 1 : 0;
 }
 
 extern "C" __declspec(dllexport) void __cdecl es_capture_stop(void* handle) noexcept {
