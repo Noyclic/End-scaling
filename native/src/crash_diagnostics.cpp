@@ -61,25 +61,51 @@ LONG WINAPI write_crash_dump(EXCEPTION_POINTERS* exceptionInfo) noexcept {
         ? exceptionInfo->ExceptionRecord->ExceptionCode : 0;
     const void* exceptionAddress = exceptionInfo && exceptionInfo->ExceptionRecord
         ? exceptionInfo->ExceptionRecord->ExceptionAddress : nullptr;
+    const DWORD exceptionFlags = exceptionInfo && exceptionInfo->ExceptionRecord
+        ? exceptionInfo->ExceptionRecord->ExceptionFlags : 0;
+
+    ULONG_PTR accessType = 0;
+    ULONG_PTR accessedAddress = 0;
+    if (exceptionInfo && exceptionInfo->ExceptionRecord &&
+        exceptionInfo->ExceptionRecord->NumberParameters >= 2 &&
+        exceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+        accessType = exceptionInfo->ExceptionRecord->ExceptionInformation[0];
+        accessedAddress = exceptionInfo->ExceptionRecord->ExceptionInformation[1];
+    }
+
+    wchar_t faultingModule[MAX_PATH] = L"unknown";
+    MEMORY_BASIC_INFORMATION memoryInfo{};
+    if (exceptionAddress &&
+        VirtualQuery(exceptionAddress, &memoryInfo, sizeof(memoryInfo)) == sizeof(memoryInfo) &&
+        memoryInfo.AllocationBase) {
+        GetModuleFileNameW(
+            static_cast<HMODULE>(memoryInfo.AllocationBase),
+            faultingModule, static_cast<DWORD>(std::size(faultingModule)));
+    }
 
     const std::uint64_t context = g_stageAndHresult.load(std::memory_order_acquire);
     const std::uint32_t stage = static_cast<std::uint32_t>(context >> 32);
     const std::uint32_t detail = static_cast<std::uint32_t>(context & 0xffffffffu);
     const DWORD contextThread = g_contextThread.load(std::memory_order_acquire);
 
-    wchar_t details[768]{};
+    wchar_t details[1536]{};
     const int detailLength = swprintf_s(
         details,
         L"End-scaling unhandled exception\r\n"
         L"Time: %04u-%02u-%02u %02u:%02u:%02u\r\n"
         L"Process ID: %lu\r\nThread ID: %lu\r\n"
-        L"Exception code: 0x%08lX\r\nException address: %p\r\n"
+        L"Exception code: 0x%08lX\r\nException flags: 0x%08lX\r\n"
+        L"Exception address: %p\r\nFaulting module: %s\r\n"
+        L"Access type: %llu\r\nAccessed address: %p\r\n"
         L"Last native stage: %lu\r\nLast stage HRESULT/detail: 0x%08lX\r\n"
         L"Last stage thread ID: %lu\r\n",
         now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
         static_cast<unsigned long>(processId),
         static_cast<unsigned long>(threadId),
-        static_cast<unsigned long>(exceptionCode), exceptionAddress,
+        static_cast<unsigned long>(exceptionCode),
+        static_cast<unsigned long>(exceptionFlags), exceptionAddress, faultingModule,
+        static_cast<unsigned long long>(accessType),
+        reinterpret_cast<const void*>(accessedAddress),
         static_cast<unsigned long>(stage), static_cast<unsigned long>(detail),
         static_cast<unsigned long>(contextThread));
 
