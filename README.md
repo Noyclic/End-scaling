@@ -55,7 +55,7 @@ The application installs a process-level unhandled-exception filter before GPU p
 
     %LOCALAPPDATA%\EndScaling\crashes
 
-The text file records the exception code, faulting address, process/thread IDs, and local timestamp. The dump contains the exception context and thread information for later inspection in a debugger. A dump is diagnostic evidence, not a fix by itself; ordinary C++/WinRT exceptions handled by the application do not create crash dumps.
+The text file records the exception code, faulting address, process/thread IDs, local timestamp, and the last native operation recorded by the capture pipeline. Stage IDs currently identify startup (1–3), capture initialization (10–19), per-frame processing (100–109), caught callback exceptions (190), failed frame HRESULTs (195), and shutdown/resource release (200–204). The HRESULT/detail field is most useful for stages that return an error. The dump contains the exception context and thread information for later inspection in a debugger. A dump is diagnostic evidence, not a fix by itself; ordinary C++/WinRT exceptions handled by the application do not create crash dumps.
 
 Crash dumps can contain fragments of application and window memory. Review them before sharing publicly; send them privately only when needed for debugging.
 
