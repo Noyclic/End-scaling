@@ -5,10 +5,12 @@
 #include <dxgi.h>
 #include <wrl/client.h>
 #include <cwchar>
-
-extern "C" void __cdecl es_install_crash_diagnostics() noexcept;
 #include <iterator>
 #include <string>
+
+extern "C" void __cdecl es_install_crash_diagnostics() noexcept;
+extern "C" void __cdecl es_crash_set_context(
+    std::uint32_t stage, std::int32_t detail) noexcept;
 
 using Microsoft::WRL::ComPtr;
 
@@ -23,6 +25,7 @@ extern "C" {
 
 __declspec(dllexport) std::uint32_t __cdecl es_core_version() noexcept {
     es_install_crash_diagnostics();
+    es_crash_set_context(2, S_OK); // native core version entry point
     return 1;
 }
 
@@ -35,6 +38,7 @@ __declspec(dllexport) int __cdecl es_probe_d3d11_gpu(
     std::uint32_t* featureLevel) noexcept {
 
     es_install_crash_diagnostics();
+    es_crash_set_context(3, S_OK); // D3D11 adapter/shader probe entered
     if (gpuName && gpuNameCapacity > 0) gpuName[0] = L'\0';
     if (errorText && errorCapacity > 0) errorText[0] = L'\0';
     if (featureLevel) *featureLevel = 0;
