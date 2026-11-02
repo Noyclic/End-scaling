@@ -45,6 +45,7 @@ mod app {
     const ID_OVERLAY: usize = 1007;
     const HOTKEY_EMERGENCY_STOP: i32 = 1;
     const MOD_NOREPEAT: u32 = 0x4000;
+    const MOD_CONTROL_ALT: u32 = 0x0003 | MOD_NOREPEAT;
     const VK_F9: u32 = 0x78;
     const WS_POPUP: u32 = 0x80000000;
 
@@ -544,7 +545,7 @@ mod app {
         SetTimer(MAIN_HWND, 1, 1000, None);
         if overlay {
             SetTimer(MAIN_HWND, 2, 33, None);
-            set_status("Оверлей включён. F9 — аварийное выключение. Сначала тестируй в оконной игре.");
+            set_status("Оверлей включён. Ctrl+Alt+F9 — выключить. Тестируй в оконной игре.");
         } else {
             set_status("Захват запущен. Ниже будет FPS предпросмотра, а не самой игры.");
         }
@@ -678,7 +679,7 @@ mod app {
             }
             ShowWindow(MAIN_HWND, SW_SHOW);
             HOTKEY_REGISTERED = RegisterHotKey(
-                MAIN_HWND, HOTKEY_EMERGENCY_STOP, MOD_NOREPEAT, VK_F9,
+                MAIN_HWND, HOTKEY_EMERGENCY_STOP, MOD_CONTROL_ALT, VK_F9,
             ) != 0;
 
             let mut message: MSG = std::mem::zeroed();
