@@ -2,7 +2,7 @@
 
 A lightweight Windows game-upscaling prototype built as a Rust application with a native C++ / Direct3D 11 graphics core.
 
-> **Current state:** the Windows Graphics Capture → Direct3D 11 scaling pipeline builds on Windows and supports both a separate preview and an experimental click-through output overlay aligned to the selected window. The overlay is still a compatibility prototype. It does not change a game's internal render resolution, and no FPS improvement is claimed until the game is configured to render fewer pixels and the full path is measured on real hardware.
+> **Current state:** the Windows Graphics Capture → Direct3D 11 scaling pipeline builds on Windows and supports both a separate preview and an experimental non-activating output overlay aligned to the selected window. The overlay accepts basic mouse messages and forwards mapped coordinates to the selected window; it is still a compatibility prototype. It does not change a game's internal render-scale setting, and no FPS improvement is claimed until the game is configured to render fewer pixels and the full path is measured on real hardware.
 
 ## Design goals
 
@@ -85,7 +85,7 @@ The **Применить низкое разрешение** action reduces the 
 - **Вернуть размер**, **Остановить**, closing the output preview, or exiting End-scaling restores the original window rectangle.
 - A recovery marker is written under %APPDATA%\\EndScaling\\window_restore.ini before resizing. If End-scaling exits unexpectedly, the next launch attempts recovery only when the same window handle and process ID still match and the window remains smaller at the saved position.
 - This changes the physical client size; it is not a game-specific render-scale API. Some games ignore or constrain window resizing.
-- The enlarged capture is still shown in a separate preview window. The experimental overlay does not remap mouse coordinates from the enlarged output to the smaller source window, so this is not yet a finished full-screen play-through path.
+- The enlarged capture is shown in the separate preview or the experimental overlay. In overlay mode, basic Win32 mouse move, button, and wheel coordinates are mapped to the smaller source client area. This is not yet a finished full-screen play-through path: Raw Input, DirectInput, relative mouse motion, controllers, and some games' custom input paths are unsupported.
 
 This is a foundation for reducing source-image render dimensions, not a guarantee of higher game FPS.
 
@@ -106,7 +106,7 @@ The overlay displays the captured/scaled frame at the original client-area size 
 ## Remaining work before claiming an FPS gain
 
 - The optional window-size controller changes the client area of ordinary windowed apps, but some games may keep rendering at a fixed internal resolution. Game-specific render-scale control is not implemented.
-- Full-size presentation is in place for the windowed overlay; reliable input for Raw Input/DirectInput, HDR, exclusive-fullscreen, protected-content, and device-loss handling still need implementation and real Windows testing.
+- Full-size presentation is in place for the windowed overlay. Raw Input/DirectInput, HDR, exclusive-fullscreen, protected-content, and automatic device recreation still need implementation and real Windows testing. Device removal/reset is now detected: capture stops and the HRESULT is shown in the UI rather than leaving stale FPS telemetry visible.
 - End-to-end game frame-time, latency, and GPU-load measurements are still needed on Intel Iris Xe.
 
 Until the game is demonstrably rendering fewer pixels and these measurements show a net benefit, **no FPS gain is claimed**. Do not test with anti-cheat-protected games yet.
