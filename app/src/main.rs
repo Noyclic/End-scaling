@@ -8,6 +8,7 @@ mod app {
     };
 
     use windows_sys::Win32::{
+        UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey},
         Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{GetStockObject, HBRUSH, BLACK_BRUSH, WHITE_BRUSH},
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentProcessId},
@@ -15,8 +16,8 @@ mod app {
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows,
             GetClientRect, GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
             GetWindowThreadProcessId, GetWindowRect, GetForegroundWindow, IsIconic, IsWindow,
-            IsWindowVisible, KillTimer, PostQuitMessage, RegisterClassW, RegisterHotKey,
-            UnregisterHotKey, SendMessageW, SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
+            IsWindowVisible, KillTimer, PostQuitMessage, RegisterClassW, SendMessageW,
+            SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
             TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HWND_TOPMOST, MSG,
             SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_SHOWWINDOW, WNDCLASSW,
             WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_MAXIMIZEBOX, WS_OVERLAPPED,
