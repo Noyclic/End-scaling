@@ -74,7 +74,20 @@ The packaged application is written to dist/. GitHub Actions builds on pushes to
 - The app reports asynchronously sampled GPU scaling time alongside CPU submission time.
 - Profile selection is saved under %APPDATA%\\EndScaling\\settings.ini.
 
-The suggested resolution is informational only; the app does not change game settings or inject into games.
+The suggested resolution is informational. The optional window-size controller reduces the selected window's client area, but it does not change a game's internal render-scale setting or inject into games. Some games follow client-area changes and render fewer pixels; others enforce a fixed internal resolution and may ignore or reject the resize.
+
+## Experimental window render-size control
+
+The **Применить низкое разрешение** action reduces the selected ordinary windowed application's client area according to the active profile (Quality 77%, Balanced 67%, Performance 50%). Dimensions are aligned to multiples of eight and never reduced below 320 × 240. The app saves the original outer window rectangle before resizing.
+
+- Use a normal, unmaximized window; minimized and maximized windows are rejected.
+- Changing the profile while the reduced size is active recalculates the client dimensions from the saved original size.
+- **Вернуть размер**, **Остановить**, closing the output preview, or exiting End-scaling restores the original window rectangle.
+- A recovery marker is written under %APPDATA%\\EndScaling\\window_restore.ini before resizing. If End-scaling exits unexpectedly, the next launch attempts recovery only when the same window handle and process ID still match and the window remains smaller at the saved position.
+- This changes the physical client size; it is not a game-specific render-scale API. Some games ignore or constrain window resizing.
+- The enlarged capture is still shown in a separate preview window. The experimental overlay does not remap mouse coordinates from the enlarged output to the smaller source window, so this is not yet a finished full-screen play-through path.
+
+This is a foundation for reducing source-image render dimensions, not a guarantee of higher game FPS.
 
 ## Experimental game overlay
 
@@ -89,8 +102,8 @@ The overlay only replaces the visible presentation with the captured/scaled fram
 
 ## Remaining work before claiming an FPS gain
 
-- Automatic per-game render-resolution control is not implemented. Set a lower resolution or render scale inside the game first; the app only captures and upscales the resulting image.
-- Overlay behavior, mouse input, HDR, exclusive-fullscreen, protected-content, and device-loss handling need real Windows testing.
+- The optional window-size controller changes the client area of ordinary windowed apps, but some games may keep rendering at a fixed internal resolution. Game-specific render-scale control is not implemented.
+- Full-size presentation with reliable mouse-coordinate remapping, HDR, exclusive-fullscreen, protected-content, and device-loss handling still need implementation and real Windows testing.
 - End-to-end game frame-time, latency, and GPU-load measurements are still needed on Intel Iris Xe.
 
 Until the game is demonstrably rendering fewer pixels and these measurements show a net benefit, **no FPS gain is claimed**. Do not test with anti-cheat-protected games yet.

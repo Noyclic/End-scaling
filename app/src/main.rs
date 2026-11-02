@@ -15,11 +15,11 @@ mod app {
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows,
             GetClientRect, GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
-            GetWindowThreadProcessId, GetWindowRect, GetForegroundWindow, IsIconic, IsWindow,
+            GetWindowThreadProcessId, GetWindowRect, GetForegroundWindow, IsIconic, IsZoomed, IsWindow,
             IsWindowVisible, KillTimer, PostQuitMessage, RegisterClassW, SendMessageW,
             SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
             TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HWND_TOPMOST, MSG,
-            SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_SHOWWINDOW, WNDCLASSW,
+            SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, WNDCLASSW,
             WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_MAXIMIZEBOX, WS_OVERLAPPED,
             WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
             WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_HOTKEY, WM_TIMER, SM_CXSCREEN, SM_CYSCREEN,
@@ -43,6 +43,8 @@ mod app {
     const ID_START: usize = 1005;
     const ID_STOP: usize = 1006;
     const ID_OVERLAY: usize = 1007;
+    const ID_APPLY_RESOLUTION: usize = 1008;
+    const ID_RESTORE_RESOLUTION: usize = 1009;
     const HOTKEY_EMERGENCY_STOP: i32 = 1;
     const MOD_NOREPEAT: u32 = 0x4000;
     const MOD_CONTROL_ALT: u32 = 0x0003 | MOD_NOREPEAT;
@@ -62,6 +64,12 @@ mod app {
     static mut CAPTURE_SOURCE_HWND: HWND = null_mut();
     static mut OVERLAY_MODE: bool = false;
     static mut HOTKEY_REGISTERED: bool = false;
+    static mut RESOLUTION_APPLIED: bool = false;
+    static mut RESIZED_HWND: HWND = null_mut();
+    static mut ORIGINAL_WINDOW_RECT: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    static mut ORIGINAL_CLIENT_WIDTH: i32 = 0;
+    static mut ORIGINAL_CLIENT_HEIGHT: i32 = 0;
+    static mut ORIGINAL_PROCESS_ID: u32 = 0;
 
     #[link(name = "end_scaling_core", kind = "static")]
     unsafe extern "C" {
@@ -127,6 +135,18 @@ mod app {
         }
     }
 
+    fn scaled_client_size(width: i32, height: i32, scale: f32) -> Option<(i32, i32)> {
+        if width < 320 || height < 240 || !scale.is_finite() || !(0.0..1.0).contains(&scale) {
+            return None;
+        }
+        let scaled_width = (((width as f32 * scale) as i32) / 8 * 8).max(320);
+        let scaled_height = (((height as f32 * scale) as i32) / 8 * 8).max(240);
+        if scaled_width >= width || scaled_height >= height {
+            return None;
+        }
+        Some((scaled_width, scaled_height))
+    }
+
     unsafe fn selected_profile() -> i32 {
         let current = SendMessageW(PROFILE_COMBO, CB_GETCURSEL, 0, 0) as i32;
         if current < 0 { SELECTED_PROFILE } else { current }
@@ -146,29 +166,247 @@ mod app {
     unsafe fn update_resolution_label() {
         let source = selected_source_window();
         let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-        let (width, height) = if !source.is_null() && IsWindow(source) != 0 &&
-            GetClientRect(source, &mut rect) != 0 &&
-            rect.right > rect.left && rect.bottom > rect.top {
-            ((rect.right - rect.left) as u32, (rect.bottom - rect.top) as u32)
-        } else {
-            (
-                GetSystemMetrics(SM_CXSCREEN).max(1) as u32,
-                GetSystemMetrics(SM_CYSCREEN).max(1) as u32,
-            )
+        let (width, height, current_width, current_height) =
+            if !source.is_null() && IsWindow(source) != 0 &&
+                GetClientRect(source, &mut rect) != 0 &&
+                rect.right > rect.left && rect.bottom > rect.top {
+                let current_width = rect.right - rect.left;
+                let current_height = rect.bottom - rect.top;
+                if RESOLUTION_APPLIED && source == RESIZED_HWND {
+                    (ORIGINAL_CLIENT_WIDTH, ORIGINAL_CLIENT_HEIGHT, current_width, current_height)
+                } else {
+                    (current_width, current_height, current_width, current_height)
+                }
+            } else {
+                let width = GetSystemMetrics(SM_CXSCREEN).max(1);
+                let height = GetSystemMetrics(SM_CYSCREEN).max(1);
+                (width, height, width, height)
+            };
+
+        let text = match scaled_client_size(width, height, profile_scale(selected_profile())) {
+            Some((target_width, target_height)) if RESOLUTION_APPLIED && source == RESIZED_HWND =>
+                format!("Цель: {target_width} × {target_height}  •  сейчас: {current_width} × {current_height}"),
+            Some((target_width, target_height)) =>
+                format!("Размер окна игры: {target_width} × {target_height}  (сейчас: {current_width} × {current_height})"),
+            None => format!("Окно слишком маленькое для уменьшения ({current_width} × {current_height})"),
         };
-        let scale = profile_scale(selected_profile());
-        let scaled_width = (((width as f32 * scale) as u32) / 8) * 8;
-        let scaled_height = (((height as f32 * scale) as u32) / 8) * 8;
-        let label = wide(&format!(
-            "Рекомендуемое разрешение игры: {scaled_width} × {scaled_height}  (исходное: {width} × {height})"
-        ));
-        SetWindowTextW(RESOLUTION_LABEL, label.as_ptr());
+        SetWindowTextW(RESOLUTION_LABEL, wide(&text).as_ptr());
     }
 
     fn settings_path() -> Option<PathBuf> {
         Some(PathBuf::from(env::var_os("APPDATA")?)
             .join("EndScaling")
             .join("settings.ini"))
+    }
+
+    fn resolution_recovery_path() -> Option<PathBuf> {
+        Some(PathBuf::from(env::var_os("APPDATA")?)
+            .join("EndScaling")
+            .join("window_restore.ini"))
+    }
+
+    fn clear_resolution_recovery() {
+        if let Some(path) = resolution_recovery_path() {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    fn write_resolution_recovery(hwnd: HWND, pid: u32, rect: RECT) -> bool {
+        let Some(path) = resolution_recovery_path() else { return false; };
+        let Some(parent) = path.parent() else { return false; };
+        if fs::create_dir_all(parent).is_err() { return false; }
+        let contents = format!(
+            "pid={pid}\nhwnd={}\nleft={}\ntop={}\nright={}\nbottom={}\n",
+            hwnd as usize, rect.left, rect.top, rect.right, rect.bottom
+        );
+        fs::write(path, contents).is_ok()
+    }
+
+    fn recovery_value(contents: &str, key: &str) -> Option<i64> {
+        contents.lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}="))?.parse::<i64>().ok())
+    }
+
+    unsafe fn restore_pending_resolution() -> bool {
+        let Some(path) = resolution_recovery_path() else { return false; };
+        let Ok(contents) = fs::read_to_string(&path) else { return false; };
+        let values = (
+            recovery_value(&contents, "pid"),
+            recovery_value(&contents, "hwnd"),
+            recovery_value(&contents, "left"),
+            recovery_value(&contents, "top"),
+            recovery_value(&contents, "right"),
+            recovery_value(&contents, "bottom"),
+        );
+        let (Some(pid), Some(hwnd_value), Some(left), Some(top), Some(right), Some(bottom)) = values else {
+            let _ = fs::remove_file(path);
+            return false;
+        };
+        if pid <= 0 || hwnd_value <= 0 || right <= left || bottom <= top ||
+            left < i32::MIN as i64 || top < i32::MIN as i64 ||
+            right > i32::MAX as i64 || bottom > i32::MAX as i64 ||
+            right - left > 32768 || bottom - top > 32768 {
+            let _ = fs::remove_file(path);
+            return false;
+        }
+
+        let hwnd = hwnd_value as usize as HWND;
+        if IsWindow(hwnd) == 0 {
+            let _ = fs::remove_file(path);
+            return false;
+        }
+        let mut actual_pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut actual_pid);
+        if actual_pid as i64 != pid {
+            let _ = fs::remove_file(path);
+            return false;
+        }
+
+        let mut current = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetWindowRect(hwnd, &mut current) == 0 { return false; }
+        let original_width = (right - left) as i32;
+        let original_height = (bottom - top) as i32;
+        let current_width = current.right - current.left;
+        let current_height = current.bottom - current.top;
+        // Avoid restoring a reused HWND or a window the user has since resized/moved.
+        if current.left != left as i32 || current.top != top as i32 ||
+            current_width <= 0 || current_height <= 0 ||
+            current_width >= original_width || current_height >= original_height {
+            let _ = fs::remove_file(path);
+            return false;
+        }
+
+        let restored = SetWindowPos(
+            hwnd, null_mut(), left as i32, top as i32,
+            original_width, original_height, SWP_NOZORDER | SWP_NOACTIVATE,
+        ) != 0;
+        if restored { let _ = fs::remove_file(path); }
+        restored
+    }
+
+    unsafe fn restore_source_resolution() -> bool {
+        if !RESOLUTION_APPLIED || RESIZED_HWND.is_null() { return false; }
+        let hwnd = RESIZED_HWND;
+        if IsWindow(hwnd) == 0 {
+            clear_resolution_recovery();
+        } else {
+            let mut actual_pid = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut actual_pid);
+            if actual_pid != ORIGINAL_PROCESS_ID {
+                clear_resolution_recovery();
+            } else {
+                let rect = ORIGINAL_WINDOW_RECT;
+                let restored = SetWindowPos(
+                    hwnd, null_mut(), rect.left, rect.top,
+                    rect.right - rect.left, rect.bottom - rect.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                ) != 0;
+                if !restored { return false; }
+                clear_resolution_recovery();
+            }
+        }
+
+        RESOLUTION_APPLIED = false;
+        RESIZED_HWND = null_mut();
+        ORIGINAL_WINDOW_RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        ORIGINAL_CLIENT_WIDTH = 0;
+        ORIGINAL_CLIENT_HEIGHT = 0;
+        ORIGINAL_PROCESS_ID = 0;
+        update_resolution_label();
+        true
+    }
+
+    unsafe fn apply_source_resolution() {
+        let source = selected_source_window();
+        if source.is_null() || IsWindow(source) == 0 {
+            set_status("Сначала выбери окно игры или приложения.");
+            return;
+        }
+        if RESOLUTION_APPLIED && RESIZED_HWND != source && !restore_source_resolution() {
+            set_status("Не удалось восстановить предыдущее окно. Сначала нажми «Вернуть размер».");
+            return;
+        }
+        if IsIconic(source) != 0 || IsZoomed(source) != 0 {
+            set_status("Для изменения размера сначала верни игру в обычный оконный режим.");
+            return;
+        }
+
+        let mut current_rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut client_rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetWindowRect(source, &mut current_rect) == 0 ||
+            GetClientRect(source, &mut client_rect) == 0 {
+            set_status("Не удалось прочитать размеры выбранного окна.");
+            return;
+        }
+
+        let (original_rect, base_width, base_height, pid) =
+            if RESOLUTION_APPLIED && RESIZED_HWND == source {
+                (ORIGINAL_WINDOW_RECT, ORIGINAL_CLIENT_WIDTH, ORIGINAL_CLIENT_HEIGHT, ORIGINAL_PROCESS_ID)
+            } else {
+                let mut process_id = 0u32;
+                GetWindowThreadProcessId(source, &mut process_id);
+                (current_rect, client_rect.right - client_rect.left,
+                 client_rect.bottom - client_rect.top, process_id)
+            };
+        let Some((target_width, target_height)) =
+            scaled_client_size(base_width, base_height, profile_scale(selected_profile())) else {
+            set_status("Окно слишком маленькое или его нельзя уменьшить с этим профилем.");
+            return;
+        };
+
+        let client_width = client_rect.right - client_rect.left;
+        let client_height = client_rect.bottom - client_rect.top;
+        let frame_width = current_rect.right - current_rect.left - client_width;
+        let frame_height = current_rect.bottom - current_rect.top - client_height;
+        if frame_width < 0 || frame_height < 0 || pid == 0 {
+            set_status("Не удалось определить рамку или процесс выбранного окна.");
+            return;
+        }
+        if !RESOLUTION_APPLIED && !write_resolution_recovery(source, pid, original_rect) {
+            set_status("Не удалось сохранить точку восстановления исходного размера.");
+            return;
+        }
+
+        let changed = SetWindowPos(
+            source, null_mut(), current_rect.left, current_rect.top,
+            target_width + frame_width, target_height + frame_height,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        ) != 0;
+        if !changed {
+            if !RESOLUTION_APPLIED { clear_resolution_recovery(); }
+            set_status("Windows не разрешила изменить размер окна игры.");
+            return;
+        }
+
+        let mut verify = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetClientRect(source, &mut verify) == 0 ||
+            verify.right - verify.left >= base_width ||
+            verify.bottom - verify.top >= base_height {
+            let _ = SetWindowPos(
+                source, null_mut(), original_rect.left, original_rect.top,
+                original_rect.right - original_rect.left,
+                original_rect.bottom - original_rect.top,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            clear_resolution_recovery();
+            RESOLUTION_APPLIED = false;
+            RESIZED_HWND = null_mut();
+            set_status("Игра не приняла уменьшенный размер окна. Исходный размер возвращён.");
+            update_resolution_label();
+            return;
+        }
+
+        RESOLUTION_APPLIED = true;
+        RESIZED_HWND = source;
+        ORIGINAL_WINDOW_RECT = original_rect;
+        ORIGINAL_CLIENT_WIDTH = base_width;
+        ORIGINAL_CLIENT_HEIGHT = base_height;
+        ORIGINAL_PROCESS_ID = pid;
+        update_resolution_label();
+        set_status(&format!(
+            "Окно уменьшено до {} × {}. Остановка предпросмотра или закрытие End-scaling восстановит исходный размер.",
+            verify.right - verify.left, verify.bottom - verify.top
+        ));
     }
 
     fn load_profile() -> i32 {
@@ -380,6 +618,7 @@ mod app {
         match message {
             WM_CLOSE => {
                 stop_capture_only();
+                restore_source_resolution();
                 DestroyWindow(hwnd);
                 0
             }
@@ -568,7 +807,12 @@ mod app {
             ShowWindow(hwnd, SW_HIDE);
             DestroyWindow(hwnd);
         }
-        set_status("Захват остановлен.");
+        let restored = restore_source_resolution();
+        set_status(if restored {
+            "Захват остановлен. Исходный размер окна игры восстановлен."
+        } else {
+            "Захват остановлен."
+        });
     }
 
     unsafe fn create_controls(parent: HWND) {
@@ -599,6 +843,8 @@ mod app {
         create_button(parent, "Начать предпросмотр", ID_START, 24, 365, 225, 36, true);
         create_button(parent, "Тестовый оверлей", ID_OVERLAY, 264, 365, 170, 36, false);
         create_button(parent, "Остановить", ID_STOP, 24, 410, 140, 34, false);
+        create_button(parent, "Применить низкое разрешение", ID_APPLY_RESOLUTION, 24, 455, 250, 34, false);
+        create_button(parent, "Вернуть размер", ID_RESTORE_RESOLUTION, 290, 455, 160, 34, false);
 
         probe_gpu();
         refresh_window_list();
@@ -633,15 +879,28 @@ mod app {
                     ID_START => { start_capture(false); 0 }
                     ID_OVERLAY => { start_capture(true); 0 }
                     ID_STOP => { stop_preview(); 0 }
+                    ID_APPLY_RESOLUTION => { apply_source_resolution(); 0 }
+                    ID_RESTORE_RESOLUTION => {
+                        if restore_source_resolution() {
+                            set_status("Исходный размер окна восстановлен.");
+                        } else {
+                            set_status("Нет изменённого окна или Windows не смогла его восстановить.");
+                        }
+                        0
+                    }
                     ID_PROFILE if notification == CBN_SELCHANGE => {
                         update_resolution_label();
+                        if RESOLUTION_APPLIED { apply_source_resolution(); }
                         if !CAPTURE_HANDLE.is_null() {
                             es_capture_set_mode(CAPTURE_HANDLE, selected_profile() as u32);
-                            set_status("Профиль переключён без перезапуска захвата.");
+                            set_status("Профиль масштабирования переключён.");
                         }
                         0
                     }
                     ID_WINDOW_LIST if notification == CBN_SELCHANGE => {
+                        if RESOLUTION_APPLIED && selected_source_window() != RESIZED_HWND {
+                            restore_source_resolution();
+                        }
                         update_resolution_label();
                         0
                     }
@@ -650,6 +909,7 @@ mod app {
             }
             WM_DESTROY => {
                 stop_capture_only();
+                restore_source_resolution();
                 if HOTKEY_REGISTERED {
                     UnregisterHotKey(hwnd, HOTKEY_EMERGENCY_STOP);
                     HOTKEY_REGISTERED = false;
@@ -689,13 +949,16 @@ mod app {
                 0, class_name.as_ptr(), title.as_ptr(),
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
                     WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE,
-                CW_USEDEFAULT, CW_USEDEFAULT, 570, 500,
+                CW_USEDEFAULT, CW_USEDEFAULT, 570, 535,
                 null_mut(), null_mut(), INSTANCE, null(),
             );
             if MAIN_HWND.is_null() {
                 return;
             }
             ShowWindow(MAIN_HWND, SW_SHOW);
+            if restore_pending_resolution() {
+                set_status("После предыдущего завершения найдено уменьшенное окно — исходный размер восстановлен.");
+            }
             HOTKEY_REGISTERED = RegisterHotKey(
                 MAIN_HWND, HOTKEY_EMERGENCY_STOP, MOD_CONTROL_ALT, VK_F9,
             ) != 0;
@@ -707,6 +970,29 @@ mod app {
             }
 
             let _ = es_core_version();
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::scaled_client_size;
+
+        #[test]
+        fn balanced_profile_scales_and_aligns_dimensions() {
+            assert_eq!(scaled_client_size(1920, 1080, 0.67), Some((1280, 720)));
+        }
+
+        #[test]
+        fn performance_profile_respects_minimum_dimensions() {
+            assert_eq!(scaled_client_size(1280, 720, 0.50), Some((640, 360)));
+            assert_eq!(scaled_client_size(640, 480, 0.50), Some((320, 240)));
+        }
+
+        #[test]
+        fn too_small_or_invalid_windows_are_rejected() {
+            assert_eq!(scaled_client_size(300, 600, 0.50), None);
+            assert_eq!(scaled_client_size(1280, 720, 1.0), None);
+            assert_eq!(scaled_client_size(1280, 720, f32::NAN), None);
         }
     }
 }
