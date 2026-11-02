@@ -119,6 +119,8 @@ LONG WINAPI write_crash_dump(EXCEPTION_POINTERS* exceptionInfo) noexcept {
 
 extern "C" void __cdecl es_install_crash_diagnostics() noexcept {
     SetUnhandledExceptionFilter(write_crash_dump);
+    g_contextThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    g_stageAndHresult.store((static_cast<std::uint64_t>(1) << 32), std::memory_order_release);
 }
 
 extern "C" void __cdecl es_crash_set_context(
