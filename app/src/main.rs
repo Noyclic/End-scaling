@@ -1099,7 +1099,10 @@ mod app {
 
     #[cfg(test)]
     mod tests {
-        use super::scaled_client_size;
+        use super::{
+            pack_mouse_coordinates, scale_pointer_coordinate, scaled_client_size,
+            signed_high_word, signed_low_word,
+        };
 
         #[test]
         fn balanced_profile_scales_and_aligns_dimensions() {
