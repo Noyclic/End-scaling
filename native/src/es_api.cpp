@@ -5,6 +5,8 @@
 #include <dxgi.h>
 #include <wrl/client.h>
 #include <cwchar>
+
+extern "C" void __cdecl es_install_crash_diagnostics() noexcept;
 #include <iterator>
 #include <string>
 
@@ -20,6 +22,7 @@ void copy_text(wchar_t* destination, int capacity, const std::wstring& value) no
 extern "C" {
 
 __declspec(dllexport) std::uint32_t __cdecl es_core_version() noexcept {
+    es_install_crash_diagnostics();
     return 1;
 }
 
@@ -31,6 +34,7 @@ __declspec(dllexport) int __cdecl es_probe_d3d11_gpu(
     int errorCapacity,
     std::uint32_t* featureLevel) noexcept {
 
+    es_install_crash_diagnostics();
     if (gpuName && gpuNameCapacity > 0) gpuName[0] = L'\0';
     if (errorText && errorCapacity > 0) errorText[0] = L'\0';
     if (featureLevel) *featureLevel = 0;
