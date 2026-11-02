@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cwchar>
+#include <iterator>
 
 #pragma comment(lib, "Dbghelp.lib")
 
