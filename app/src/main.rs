@@ -9,17 +9,19 @@ mod app {
 
     use windows_sys::Win32::{
         Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::Gdi::{GetStockObject, HBRUSH, BLACK_BRUSH, WHITE_BRUSH},
+        Graphics::Gdi::{GetStockObject, SetLayeredWindowAttributes, HBRUSH, BLACK_BRUSH, WHITE_BRUSH, LWA_ALPHA},
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentProcessId},
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows,
             GetClientRect, GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
-            GetWindowThreadProcessId, IsWindow, IsWindowVisible, KillTimer, PostQuitMessage,
-            RegisterClassW, SendMessageW, SetTimer, SetWindowTextW, ShowWindow, TranslateMessage,
-            CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, SW_HIDE, SW_SHOW, WNDCLASSW,
+            GetWindowThreadProcessId, GetWindowRect, GetForegroundWindow, IsIconic, IsWindow,
+            IsWindowVisible, KillTimer, PostQuitMessage, RegisterClassW, RegisterHotKey,
+            UnregisterHotKey, SendMessageW, SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
+            TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HWND_TOPMOST, MSG,
+            SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_SHOWWINDOW, WNDCLASSW,
             WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_MAXIMIZEBOX, WS_OVERLAPPED,
             WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
-            WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_TIMER, SM_CXSCREEN, SM_CYSCREEN,
+            WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_HOTKEY, WM_TIMER, SM_CXSCREEN, SM_CYSCREEN,
         },
     };
 
@@ -39,6 +41,11 @@ mod app {
     const ID_REFRESH: usize = 1004;
     const ID_START: usize = 1005;
     const ID_STOP: usize = 1006;
+    const ID_OVERLAY: usize = 1007;
+    const HOTKEY_EMERGENCY_STOP: i32 = 1;
+    const MOD_NOREPEAT: u32 = 0x4000;
+    const VK_F9: u32 = 0x78;
+    const WS_POPUP: u32 = 0x80000000;
 
     static mut INSTANCE: HINSTANCE = null_mut();
     static mut MAIN_HWND: HWND = null_mut();
@@ -50,6 +57,9 @@ mod app {
     static mut STATUS_LABEL: HWND = null_mut();
     static mut SELECTED_PROFILE: i32 = 1;
     static mut CAPTURE_HANDLE: *mut c_void = null_mut();
+    static mut CAPTURE_SOURCE_HWND: HWND = null_mut();
+    static mut OVERLAY_MODE: bool = false;
+    static mut HOTKEY_REGISTERED: bool = false;
 
     #[link(name = "end_scaling_core", kind = "static")]
     unsafe extern "C" {
@@ -320,7 +330,10 @@ mod app {
     unsafe fn stop_capture_only() {
         if !MAIN_HWND.is_null() {
             KillTimer(MAIN_HWND, 1);
+            KillTimer(MAIN_HWND, 2);
         }
+        OVERLAY_MODE = false;
+        CAPTURE_SOURCE_HWND = null_mut();
         if !CAPTURE_HANDLE.is_null() {
             es_capture_stop(CAPTURE_HANDLE);
             CAPTURE_HANDLE = null_mut();
@@ -365,7 +378,47 @@ mod app {
         }
     }
 
-    unsafe fn create_preview_window() -> HWND {
+    unsafe fn update_overlay_position() {
+        if !OVERLAY_MODE || PREVIEW_HWND.is_null() || CAPTURE_SOURCE_HWND.is_null() ||
+            IsWindow(PREVIEW_HWND) == 0 || IsWindow(CAPTURE_SOURCE_HWND) == 0 {
+            return;
+        }
+
+        // Keep the overlay only over the active source window. Alt+Tab hides it.
+        let should_show = IsWindowVisible(CAPTURE_SOURCE_HWND) != 0 &&
+            IsIconic(CAPTURE_SOURCE_HWND) == 0 &&
+            GetForegroundWindow() == CAPTURE_SOURCE_HWND;
+        if !should_show {
+            if IsWindowVisible(PREVIEW_HWND) != 0 {
+                ShowWindow(PREVIEW_HWND, SW_HIDE);
+            }
+            return;
+        }
+
+        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetWindowRect(CAPTURE_SOURCE_HWND, &mut rect) == 0 {
+            ShowWindow(PREVIEW_HWND, SW_HIDE);
+            return;
+        }
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width <= 0 || height <= 0 {
+            ShowWindow(PREVIEW_HWND, SW_HIDE);
+            return;
+        }
+
+        SetWindowPos(
+            PREVIEW_HWND,
+            HWND_TOPMOST,
+            rect.left,
+            rect.top,
+            width,
+            height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+
+    unsafe fn create_output_window(overlay: bool, source: HWND) -> HWND {
         let class_name = wide("EndScalingPreviewWindow");
         let class = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
@@ -381,24 +434,70 @@ mod app {
         };
         RegisterClassW(&class);
 
-        let title = wide("End-scaling — предпросмотр");
-        let hwnd = CreateWindowExW(
-            0, class_name.as_ptr(), title.as_ptr(),
+        let title = wide(if overlay {
+            "End-scaling — игровой оверлей"
+        } else {
+            "End-scaling — предпросмотр"
+        });
+        let mut x = CW_USEDEFAULT;
+        let mut y = CW_USEDEFAULT;
+        let mut width = 960;
+        let mut height = 540;
+        if overlay {
+            let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            if GetWindowRect(source, &mut rect) == 0 {
+                return null_mut();
+            }
+            x = rect.left;
+            y = rect.top;
+            width = rect.right - rect.left;
+            height = rect.bottom - rect.top;
+            if width <= 0 || height <= 0 {
+                return null_mut();
+            }
+        }
+
+        // WS_EX_TRANSPARENT on a layered window passes pointer input to the
+        // window underneath. F9 is registered globally as an emergency stop.
+        let extended_style = if overlay {
+            0x00000008 | 0x00000020 | 0x00080000 | 0x00000080 | 0x08000000
+        } else {
+            0
+        };
+        let style = if overlay {
+            WS_POPUP // deliberately hidden until the source game is foreground
+        } else {
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
-                WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE,
-            CW_USEDEFAULT, CW_USEDEFAULT, 960, 540,
+                WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE
+        };
+
+        let hwnd = CreateWindowExW(
+            extended_style, class_name.as_ptr(), title.as_ptr(),
+            style, x, y, width, height,
             null_mut(), null_mut(), INSTANCE, null(),
         );
         if !hwnd.is_null() {
-            ShowWindow(hwnd, SW_SHOW);
+            if overlay {
+                if SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA) == 0 {
+                    DestroyWindow(hwnd);
+                    return null_mut();
+                }
+            } else {
+                ShowWindow(hwnd, SW_SHOW);
+            }
         }
         hwnd
     }
 
-    unsafe fn start_capture() {
+    unsafe fn start_capture(overlay: bool) {
         let source = selected_source_window();
         if source.is_null() || IsWindow(source) == 0 {
             set_status("Сначала выбери окно игры и обнови список, если его нет.");
+            return;
+        }
+
+        if overlay && !HOTKEY_REGISTERED {
+            set_status("Не удалось зарегистрировать F9. Оверлей не запущен ради безопасного выхода.");
             return;
         }
 
@@ -406,7 +505,9 @@ mod app {
         if !PREVIEW_HWND.is_null() && IsWindow(PREVIEW_HWND) != 0 {
             DestroyWindow(PREVIEW_HWND);
         }
-        PREVIEW_HWND = create_preview_window();
+        CAPTURE_SOURCE_HWND = source;
+        OVERLAY_MODE = overlay;
+        PREVIEW_HWND = create_output_window(overlay, source);
         if PREVIEW_HWND.is_null() {
             set_status("Не удалось создать окно предпросмотра.");
             return;
@@ -430,7 +531,12 @@ mod app {
         }
 
         SetTimer(MAIN_HWND, 1, 1000, None);
-        set_status("Захват запущен. Ниже будет FPS предпросмотра, а не самой игры.");
+        if overlay {
+            SetTimer(MAIN_HWND, 2, 33, None);
+            set_status("Оверлей включён. F9 — аварийное выключение. Сначала тестируй в оконной игре.");
+        } else {
+            set_status("Захват запущен. Ниже будет FPS предпросмотра, а не самой игры.");
+        }
     }
 
     unsafe fn stop_preview() {
@@ -469,7 +575,8 @@ mod app {
         );
         create_button(parent, "Обновить", ID_REFRESH, 396, 317, 120, 32, false);
         create_button(parent, "Начать предпросмотр", ID_START, 24, 365, 225, 36, true);
-        create_button(parent, "Остановить", ID_STOP, 264, 365, 140, 36, false);
+        create_button(parent, "Тестовый оверлей", ID_OVERLAY, 264, 365, 170, 36, false);
+        create_button(parent, "Остановить", ID_STOP, 24, 410, 140, 34, false);
 
         probe_gpu();
         refresh_window_list();
@@ -487,13 +594,22 @@ mod app {
                 update_capture_stats();
                 0
             }
+            WM_TIMER if wparam == 2 => {
+                update_overlay_position();
+                0
+            }
+            WM_HOTKEY if wparam == HOTKEY_EMERGENCY_STOP as usize => {
+                stop_preview();
+                0
+            }
             WM_COMMAND => {
                 let id = (wparam & 0xffff) as usize;
                 let notification = ((wparam >> 16) & 0xffff) as u16;
                 match id {
                     ID_SAVE => { save_profile(); 0 }
                     ID_REFRESH => { refresh_window_list(); 0 }
-                    ID_START => { start_capture(); 0 }
+                    ID_START => { start_capture(false); 0 }
+                    ID_OVERLAY => { start_capture(true); 0 }
                     ID_STOP => { stop_preview(); 0 }
                     ID_PROFILE | ID_WINDOW_LIST if notification == CBN_SELCHANGE => {
                         update_resolution_label();
@@ -504,6 +620,10 @@ mod app {
             }
             WM_DESTROY => {
                 stop_capture_only();
+                if HOTKEY_REGISTERED {
+                    UnregisterHotKey(hwnd, HOTKEY_EMERGENCY_STOP);
+                    HOTKEY_REGISTERED = false;
+                }
                 if !PREVIEW_HWND.is_null() && IsWindow(PREVIEW_HWND) != 0 {
                     DestroyWindow(PREVIEW_HWND);
                 }
@@ -546,6 +666,9 @@ mod app {
                 return;
             }
             ShowWindow(MAIN_HWND, SW_SHOW);
+            HOTKEY_REGISTERED = RegisterHotKey(
+                MAIN_HWND, HOTKEY_EMERGENCY_STOP, MOD_NOREPEAT, VK_F9,
+            ) != 0;
 
             let mut message: MSG = std::mem::zeroed();
             while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
