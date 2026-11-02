@@ -91,19 +91,22 @@ This is a foundation for reducing source-image render dimensions, not a guarante
 
 ## Experimental game overlay
 
-The UI has a separate **Тестовый оверлей** action. It creates a borderless topmost output window aligned to the selected game's window, keeps it hidden while another app is foreground, and uses a non-activating click-through window style so pointer input can reach the game beneath it. The position is checked by a low-frequency UI timer and only updated when the source window actually moves or resizes. When the overlay is hidden after Alt+Tab (or a preview is minimized), captured frames are released without running the scaler or presenting, avoiding unnecessary GPU work while inactive.
+The UI has a separate **Тестовый оверлей** action. When window-size control is active, it creates a borderless topmost output window over the original client-area dimensions while the source application renders in a smaller client area. The D3D11 swap chain therefore receives a smaller captured frame and scales it up to the saved output size. The overlay remains non-activating so keyboard focus can stay with the source application.
+
+Basic Win32 mouse move, button, and wheel messages are mapped from output coordinates back to the smaller source client area and posted to the source HWND. The overlay is positioned over the original client area and receives pointer messages in order to transform them. The position is checked by a low-frequency UI timer and only updated when the source moves or resizes. When hidden after Alt+Tab, captured frames are released without scaling or presenting, avoiding unnecessary GPU work while inactive.
 
 - Start with a normal windowed or borderless-window game; switch back to the game after enabling the overlay.
 - Press **Ctrl+Alt+F9** at any time to stop capture and remove the overlay.
-- This is experimental. Input pass-through and visual alignment still need hands-on testing on Windows 10/11 and on the target GPU.
-- Do not use this mode with exclusive-fullscreen or anti-cheat-protected games until compatibility has been verified.
+- This remains experimental. Only basic Win32 mouse messages are mapped; Raw Input, DirectInput, relative mouse motion, controllers, and games that ignore posted mouse messages are not supported by this path. Run the source application and End-scaling at the same integrity level.
+- Visual alignment, pointer mapping, drag behavior, and keyboard focus still need hands-on testing on Windows 10/11 and the target GPU.
+- Do not use this mode with exclusive-fullscreen or anti-cheat-protected games.
 
-The overlay only replaces the visible presentation with the captured/scaled frame. It does **not** lower the game's render resolution automatically, and its output FPS is not the game's FPS. No performance gain is claimed yet.
+The overlay displays the captured/scaled frame at the original client-area size while the source window can remain smaller. It still does **not** modify a game's internal render scale, and output FPS is not the game's FPS. Mouse remapping is limited to basic Win32 messages. No performance gain is claimed until actual game frame times are measured.
 
 ## Remaining work before claiming an FPS gain
 
 - The optional window-size controller changes the client area of ordinary windowed apps, but some games may keep rendering at a fixed internal resolution. Game-specific render-scale control is not implemented.
-- Full-size presentation with reliable mouse-coordinate remapping, HDR, exclusive-fullscreen, protected-content, and device-loss handling still need implementation and real Windows testing.
+- Full-size presentation is in place for the windowed overlay; reliable input for Raw Input/DirectInput, HDR, exclusive-fullscreen, protected-content, and device-loss handling still need implementation and real Windows testing.
 - End-to-end game frame-time, latency, and GPU-load measurements are still needed on Intel Iris Xe.
 
 Until the game is demonstrably rendering fewer pixels and these measurements show a net benefit, **no FPS gain is claimed**. Do not test with anti-cheat-protected games yet.

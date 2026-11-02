@@ -9,15 +9,15 @@ mod app {
 
     use windows_sys::Win32::{
         UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey},
-        Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{GetStockObject, HBRUSH, BLACK_BRUSH, WHITE_BRUSH},
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentProcessId},
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows,
             GetClientRect, GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
             GetWindowThreadProcessId, GetWindowRect, GetForegroundWindow, IsIconic, IsZoomed, IsWindow,
-            IsWindowVisible, KillTimer, PostQuitMessage, RegisterClassW, SendMessageW,
-            SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
+            IsWindowVisible, KillTimer, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
+            SetCapture, ReleaseCapture, ClientToScreen, SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
             TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HWND_TOPMOST, MSG,
             SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, WNDCLASSW,
             WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_MAXIMIZEBOX, WS_OVERLAPPED,
@@ -50,6 +50,33 @@ mod app {
     const MOD_CONTROL_ALT: u32 = 0x0003 | MOD_NOREPEAT;
     const VK_F9: u32 = 0x78;
     const WS_POPUP: u32 = 0x80000000;
+
+    const WM_MOUSEACTIVATE_VALUE: u32 = 0x0021;
+    const WM_MOUSEMOVE_VALUE: u32 = 0x0200;
+    const WM_LBUTTONDOWN_VALUE: u32 = 0x0201;
+    const WM_LBUTTONUP_VALUE: u32 = 0x0202;
+    const WM_LBUTTONDBLCLK_VALUE: u32 = 0x0203;
+    const WM_RBUTTONDOWN_VALUE: u32 = 0x0204;
+    const WM_RBUTTONUP_VALUE: u32 = 0x0205;
+    const WM_RBUTTONDBLCLK_VALUE: u32 = 0x0206;
+    const WM_MBUTTONDOWN_VALUE: u32 = 0x0207;
+    const WM_MBUTTONUP_VALUE: u32 = 0x0208;
+    const WM_MBUTTONDBLCLK_VALUE: u32 = 0x0209;
+    const WM_MOUSEWHEEL_VALUE: u32 = 0x020A;
+    const WM_XBUTTONDOWN_VALUE: u32 = 0x020B;
+    const WM_XBUTTONUP_VALUE: u32 = 0x020C;
+    const WM_XBUTTONDBLCLK_VALUE: u32 = 0x020D;
+    const WM_MOUSEHWHEEL_VALUE: u32 = 0x020E;
+
+    const MK_LBUTTON_VALUE: WPARAM = 0x0001;
+    const MK_RBUTTON_VALUE: WPARAM = 0x0002;
+    const MK_MBUTTON_VALUE: WPARAM = 0x0010;
+    const MK_XBUTTON1_VALUE: WPARAM = 0x0020;
+    const MK_XBUTTON2_VALUE: WPARAM = 0x0040;
+    const MK_BUTTON_MASK: WPARAM = MK_LBUTTON_VALUE | MK_RBUTTON_VALUE |
+        MK_MBUTTON_VALUE | MK_XBUTTON1_VALUE | MK_XBUTTON2_VALUE;
+
+    const MA_NOACTIVATE_VALUE: LRESULT = 3;
 
     static mut INSTANCE: HINSTANCE = null_mut();
     static mut MAIN_HWND: HWND = null_mut();
@@ -133,6 +160,28 @@ mod app {
             2 => 0.50,
             _ => 0.67,
         }
+    }
+
+    fn scale_pointer_coordinate(position: i32, output_extent: i32, source_extent: i32) -> i32 {
+        if output_extent <= 0 || source_extent <= 0 {
+            return 0;
+        }
+        ((position as i64 * source_extent as i64) / output_extent as i64)
+            .clamp(i32::MIN as i64, i32::MAX as i64) as i32
+    }
+
+    fn pack_mouse_coordinates(x: i32, y: i32) -> LPARAM {
+        let x = x.clamp(i16::MIN as i32, i16::MAX as i32) as i16 as u16 as u32;
+        let y = y.clamp(i16::MIN as i32, i16::MAX as i32) as i16 as u16 as u32;
+        ((y << 16) | x) as LPARAM
+    }
+
+    fn signed_low_word(value: LPARAM) -> i32 {
+        (value as u32 as u16 as i16) as i32
+    }
+
+    fn signed_high_word(value: LPARAM) -> i32 {
+        ((value as u32 >> 16) as u16 as i16) as i32
     }
 
     fn scaled_client_size(width: i32, height: i32, scale: f32) -> Option<(i32, i32)> {
@@ -616,6 +665,18 @@ mod app {
         hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM,
     ) -> LRESULT {
         match message {
+            WM_MOUSEACTIVATE_VALUE if OVERLAY_MODE => MA_NOACTIVATE_VALUE,
+            WM_MOUSEMOVE_VALUE | WM_LBUTTONDOWN_VALUE | WM_LBUTTONUP_VALUE |
+            WM_LBUTTONDBLCLK_VALUE | WM_RBUTTONDOWN_VALUE | WM_RBUTTONUP_VALUE |
+            WM_RBUTTONDBLCLK_VALUE | WM_MBUTTONDOWN_VALUE | WM_MBUTTONUP_VALUE |
+            WM_MBUTTONDBLCLK_VALUE | WM_MOUSEWHEEL_VALUE | WM_MOUSEHWHEEL_VALUE |
+            WM_XBUTTONDOWN_VALUE | WM_XBUTTONUP_VALUE | WM_XBUTTONDBLCLK_VALUE
+                if OVERLAY_MODE && !CAPTURE_SOURCE_HWND.is_null() => {
+                    forward_overlay_mouse_message(
+                        hwnd, CAPTURE_SOURCE_HWND, message, wparam, lparam,
+                    );
+                    0
+                }
             WM_CLOSE => {
                 stop_capture_only();
                 restore_source_resolution();
@@ -632,13 +693,40 @@ mod app {
         }
     }
 
+    unsafe fn overlay_target_rect(source: HWND) -> Option<RECT> {
+        let mut client = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetClientRect(source, &mut client) == 0 {
+            return None;
+        }
+
+        let (width, height) = if RESOLUTION_APPLIED && source == RESIZED_HWND {
+            (ORIGINAL_CLIENT_WIDTH, ORIGINAL_CLIENT_HEIGHT)
+        } else {
+            (client.right - client.left, client.bottom - client.top)
+        };
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+
+        let mut origin = POINT { x: 0, y: 0 };
+        if ClientToScreen(source, &mut origin) == 0 {
+            return None;
+        }
+        Some(RECT {
+            left: origin.x,
+            top: origin.y,
+            right: origin.x.saturating_add(width),
+            bottom: origin.y.saturating_add(height),
+        })
+    }
+
     unsafe fn update_overlay_position() {
         if !OVERLAY_MODE || PREVIEW_HWND.is_null() || CAPTURE_SOURCE_HWND.is_null() ||
             IsWindow(PREVIEW_HWND) == 0 || IsWindow(CAPTURE_SOURCE_HWND) == 0 {
             return;
         }
 
-        // Keep the overlay only over the active source window. Alt+Tab hides it.
+        // Align to the original client area, not the deliberately reduced source.
         let should_show = IsWindowVisible(CAPTURE_SOURCE_HWND) != 0 &&
             IsIconic(CAPTURE_SOURCE_HWND) == 0 &&
             GetForegroundWindow() == CAPTURE_SOURCE_HWND;
@@ -649,17 +737,12 @@ mod app {
             return;
         }
 
-        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-        if GetWindowRect(CAPTURE_SOURCE_HWND, &mut rect) == 0 {
+        let Some(rect) = overlay_target_rect(CAPTURE_SOURCE_HWND) else {
             ShowWindow(PREVIEW_HWND, SW_HIDE);
             return;
-        }
+        };
         let width = rect.right - rect.left;
         let height = rect.bottom - rect.top;
-        if width <= 0 || height <= 0 {
-            ShowWindow(PREVIEW_HWND, SW_HIDE);
-            return;
-        }
 
         let mut current = RECT { left: 0, top: 0, right: 0, bottom: 0 };
         let already_aligned = IsWindowVisible(PREVIEW_HWND) != 0 &&
@@ -676,6 +759,76 @@ mod app {
                 height,
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
+        }
+    }
+
+    unsafe fn forward_overlay_mouse_message(
+        overlay: HWND, source: HWND, message: u32, wparam: WPARAM, lparam: LPARAM,
+    ) {
+        if IsWindow(source) == 0 || IsWindow(overlay) == 0 {
+            return;
+        }
+
+        let mut output_client = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut source_client = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetClientRect(overlay, &mut output_client) == 0 ||
+            GetClientRect(source, &mut source_client) == 0 {
+            return;
+        }
+
+        let output_width = output_client.right - output_client.left;
+        let output_height = output_client.bottom - output_client.top;
+        let source_width = source_client.right - source_client.left;
+        let source_height = source_client.bottom - source_client.top;
+        if output_width <= 0 || output_height <= 0 || source_width <= 0 || source_height <= 0 {
+            return;
+        }
+
+        let is_wheel = message == WM_MOUSEWHEEL_VALUE || message == WM_MOUSEHWHEEL_VALUE;
+        let (local_x, local_y) = if is_wheel {
+            let mut output_origin = POINT { x: 0, y: 0 };
+            if ClientToScreen(overlay, &mut output_origin) == 0 {
+                return;
+            }
+            (
+                signed_low_word(lparam).saturating_sub(output_origin.x),
+                signed_high_word(lparam).saturating_sub(output_origin.y),
+            )
+        } else {
+            (signed_low_word(lparam), signed_high_word(lparam))
+        };
+
+        let source_x = scale_pointer_coordinate(local_x, output_width, source_width);
+        let source_y = scale_pointer_coordinate(local_y, output_height, source_height);
+        let forwarded_lparam = if is_wheel {
+            let mut source_point = POINT { x: source_x, y: source_y };
+            if ClientToScreen(source, &mut source_point) == 0 {
+                return;
+            }
+            pack_mouse_coordinates(source_point.x, source_point.y)
+        } else {
+            pack_mouse_coordinates(source_x, source_y)
+        };
+
+        let is_down = matches!(
+            message,
+            WM_LBUTTONDOWN_VALUE | WM_RBUTTONDOWN_VALUE |
+            WM_MBUTTONDOWN_VALUE | WM_XBUTTONDOWN_VALUE
+        );
+        let is_up = matches!(
+            message,
+            WM_LBUTTONUP_VALUE | WM_RBUTTONUP_VALUE |
+            WM_MBUTTONUP_VALUE | WM_XBUTTONUP_VALUE
+        );
+        if is_down {
+            SetCapture(overlay);
+        }
+
+        // Only basic Win32 mouse messages are synthesized. Raw Input is not.
+        PostMessageW(source, message, wparam, forwarded_lparam);
+
+        if is_up && (wparam & MK_BUTTON_MASK) == 0 {
+            ReleaseCapture();
         }
     }
 
@@ -705,24 +858,20 @@ mod app {
         let mut width = 960;
         let mut height = 540;
         if overlay {
-            let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-            if GetWindowRect(source, &mut rect) == 0 {
+            let Some(rect) = overlay_target_rect(source) else {
                 return null_mut();
-            }
+            };
             x = rect.left;
             y = rect.top;
             width = rect.right - rect.left;
             height = rect.bottom - rect.top;
-            if width <= 0 || height <= 0 {
-                return null_mut();
-            }
         }
 
-        // Keep the flip-model HWND path (no layered redirection surface).
-        // WS_EX_TRANSPARENT is used for click-through on the Win10+ desktop path.
-        // F9 is registered globally as an emergency stop.
+        // Keep the flip-model HWND path. The overlay is topmost and NOACTIVATE,
+        // but receives mouse input so it can translate coordinates to the source.
+        // Keyboard focus remains with the game window underneath.
         let extended_style = if overlay {
-            0x00000008 | 0x00000020 | 0x00000080 | 0x08000000
+            0x00000008 | 0x00000080 | 0x08000000
         } else {
             0
         };
@@ -993,6 +1142,26 @@ mod app {
             assert_eq!(scaled_client_size(300, 600, 0.50), None);
             assert_eq!(scaled_client_size(1280, 720, 1.0), None);
             assert_eq!(scaled_client_size(1280, 720, f32::NAN), None);
+        }
+
+        #[test]
+        fn pointer_coordinates_scale_from_output_to_source() {
+            assert_eq!(scale_pointer_coordinate(960, 1920, 1280), 640);
+            assert_eq!(scale_pointer_coordinate(540, 1080, 720), 360);
+            assert_eq!(scale_pointer_coordinate(1920, 1920, 1280), 1280);
+        }
+
+        #[test]
+        fn pointer_coordinates_preserve_drag_positions_outside_output() {
+            assert_eq!(scale_pointer_coordinate(-15, 1920, 1280), -10);
+            assert_eq!(scale_pointer_coordinate(0, 0, 1280), 0);
+            assert_eq!(scale_pointer_coordinate(10, 1920, 0), 0);
+        }
+
+        #[test]
+        fn packed_mouse_coordinates_keep_signed_values() {
+            assert_eq!(signed_low_word(pack_mouse_coordinates(-12, 37)), -12);
+            assert_eq!(signed_high_word(pack_mouse_coordinates(-12, 37)), 37);
         }
     }
 }

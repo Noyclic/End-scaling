@@ -108,7 +108,9 @@ public:
                 winrtDevice_, DirectXPixelFormat::B8G8R8A8UIntNormalized,
                 static_cast<int>(kBufferCount), size_);
             session_ = framePool_.CreateCaptureSession(item_);
-            session_.IsCursorCaptureEnabled(true);
+            // The desktop cursor is drawn above the output HWND. Capturing it
+            // into the source frame as well would show a duplicated cursor.
+            session_.IsCursorCaptureEnabled(false);
 
             std::weak_ptr<WindowCapture> weak = shared_from_this();
             token_ = framePool_.FrameArrived(
