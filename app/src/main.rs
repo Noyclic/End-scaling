@@ -108,6 +108,7 @@ mod app {
         gpu_ms: [f64; 3],
         cpu_submit_ms: [f64; 3],
         measured_frames: u32,
+        scene_frames: u32,
         source_width: u32,
         source_height: u32,
         output_width: u32,
@@ -643,19 +644,17 @@ mod app {
         if apply_recommended {
             SendMessageW(PROFILE_COMBO, CB_SETCURSEL, recommended as WPARAM, 0);
             SELECTED_PROFILE = recommended;
-            if !CAPTURE_HANDLE.is_null() {
-                es_capture_set_mode(CAPTURE_HANDLE, recommended as u32);
-            }
             save_profile();
-            let chosen_ms = results.gpu_ms[recommended as usize];
-            let budget_note = if chosen_ms <= frame_budget_ms {
-                "в пределах бюджета 60 FPS для самого скейлера"
+            let chosen_gpu_ms = results.gpu_ms[recommended as usize];
+            let chosen_cpu_ms = results.cpu_submit_ms[recommended as usize];
+            let budget_note = if chosen_gpu_ms <= frame_budget_ms && chosen_cpu_ms <= frame_budget_ms {
+                "GPU и CPU укладываются в бюджет 60 FPS для скейлера"
             } else {
-                "даже скейлер не укладывается в бюджет 60 FPS"
+                "скейлер не укладывается в бюджет 60 FPS"
             };
             set_status(&format!(
-                "Автоподбор выбрал {}: {:.2} ms GPU — {}. Это тест скейлера, не FPS игры.",
-                profile_names[recommended as usize], chosen_ms, budget_note
+                "Автоподбор выбрал {}: GPU {:.2} ms / CPU {:.2} ms — {}. Это тест скейлера, не FPS игры.",
+                profile_names[recommended as usize], chosen_gpu_ms, chosen_cpu_ms, budget_note
             ));
         } else {
             set_status("FSR Fun Mark завершён. Профиль не менялся; измерено время только самого скейлера.");
