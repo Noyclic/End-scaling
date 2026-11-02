@@ -15,7 +15,7 @@ namespace end_scaling {
 namespace {
 constexpr UINT kSourceWidth = 960, kSourceHeight = 540;
 constexpr UINT kOutputWidth = 1920, kOutputHeight = 1080;
-constexpr UINT kWarmupFrames = 8, kMeasuredFrames = 24;
+constexpr UINT kWarmupFrames = 8, kMeasuredFrames = 24, kSceneFrames = 8;
 constexpr DWORD kQueryTimeoutMs = 5000;
 std::uint32_t rgba(std::uint8_t r, std::uint8_t g, std::uint8_t b) noexcept {
     return static_cast<std::uint32_t>(r) |
@@ -25,10 +25,12 @@ std::uint32_t rgba(std::uint8_t r, std::uint8_t g, std::uint8_t b) noexcept {
 std::uint8_t channel(float value) noexcept {
     return static_cast<std::uint8_t>(std::clamp(value, 0.0f, 255.0f));
 }
-std::vector<std::uint32_t> make_test_scene() {
+std::vector<std::uint32_t> make_test_scene(UINT frame) {
     std::vector<std::uint32_t> pixels(static_cast<std::size_t>(kSourceWidth) * kSourceHeight);
     const float horizon = kSourceHeight * 0.54f;
-    const float orbX = kSourceWidth * 0.55f, orbY = horizon - 42.0f;
+    const float phase = static_cast<float>(frame) * 0.55f;
+    const float orbX = kSourceWidth * (0.50f + 0.16f * std::sin(phase));
+    const float orbY = horizon - 42.0f + 9.0f * std::cos(phase * 0.7f);
     constexpr float radius = 48.0f;
     for (UINT y = 0; y < kSourceHeight; ++y) {
         for (UINT x = 0; x < kSourceWidth; ++x) {
@@ -73,10 +75,11 @@ bool wait_for_query(ID3D11DeviceContext* context, ID3D11Asynchronous* query, voi
     }
 }
 HRESULT measure_profile(ID3D11Device* device, ID3D11DeviceContext* context, D3D11Scaler& scaler,
-    ID3D11ShaderResourceView* source, ID3D11RenderTargetView* destination,
-    ScaleMode mode, float sharpness, double* gpuMs, double* cpuMs) {
+    const std::array<ComPtr<ID3D11ShaderResourceView>, kSceneFrames>& sources,
+    ID3D11RenderTargetView* destination, ScaleMode mode, float sharpness,
+    double* gpuMs, double* cpuMs) {
     for (UINT i = 0; i < kWarmupFrames; ++i) {
-        const HRESULT hr = scaler.draw(source, destination, mode, sharpness);
+        const HRESULT hr = scaler.draw(sources[i % sources.size()].Get(), destination, mode, sharpness);
         if (FAILED(hr)) return hr;
     }
     context->Flush();
@@ -91,7 +94,7 @@ HRESULT measure_profile(ID3D11Device* device, ID3D11DeviceContext* context, D3D1
     context->Begin(disjoint.Get()); context->End(start.Get());
     const auto cpuStart = std::chrono::steady_clock::now();
     for (UINT i = 0; i < kMeasuredFrames; ++i) {
-        hr = scaler.draw(source, destination, mode, sharpness);
+        hr = scaler.draw(sources[i % sources.size()].Get(), destination, mode, sharpness);
         if (FAILED(hr)) { context->End(disjoint.Get()); return hr; }
     }
     const auto cpuEnd = std::chrono::steady_clock::now();
@@ -114,6 +117,7 @@ HRESULT run_fsr_benchmark(const wchar_t* shaderPath, FsrBenchmarkResults* result
     results->source_width = kSourceWidth; results->source_height = kSourceHeight;
     results->output_width = kOutputWidth; results->output_height = kOutputHeight;
     results->measured_frames = kMeasuredFrames;
+    results->scene_frames = kSceneFrames;
     try {
         constexpr std::array<D3D_FEATURE_LEVEL, 3> levels{D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0};
         ComPtr<ID3D11Device> device; ComPtr<ID3D11DeviceContext> context; D3D_FEATURE_LEVEL selectedLevel{};
@@ -143,18 +147,30 @@ HRESULT run_fsr_benchmark(const wchar_t* shaderPath, FsrBenchmarkResults* result
             if (error) *error = shaderError.empty() ? L"Не удалось инициализировать FSR 1 для теста." : shaderError;
             return hr;
         }
-        const auto scene = make_test_scene();
+        // Prebuild an eight-frame motion sequence so scene uploads are not
+        // included in the timed scaler passes.
+        std::array<ComPtr<ID3D11ShaderResourceView>, kSceneFrames> sourceViews{};
         D3D11_TEXTURE2D_DESC sourceDesc{};
-        sourceDesc.Width = kSourceWidth; sourceDesc.Height = kSourceHeight; sourceDesc.MipLevels = 1; sourceDesc.ArraySize = 1;
-        sourceDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sourceDesc.SampleDesc.Count = 1;
-        sourceDesc.Usage = D3D11_USAGE_DEFAULT; sourceDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        D3D11_SUBRESOURCE_DATA initialData{}; initialData.pSysMem = scene.data();
-        initialData.SysMemPitch = kSourceWidth * sizeof(std::uint32_t);
-        ComPtr<ID3D11Texture2D> sourceTexture;
-        hr = device->CreateTexture2D(&sourceDesc, &initialData, &sourceTexture);
-        if (FAILED(hr)) { if (error) *error = L"Не удалось создать тестовую текстуру."; return hr; }
-        ComPtr<ID3D11ShaderResourceView> sourceView;
-        hr = device->CreateShaderResourceView(sourceTexture.Get(), nullptr, &sourceView); if (FAILED(hr)) return hr;
+        sourceDesc.Width = kSourceWidth; sourceDesc.Height = kSourceHeight;
+        sourceDesc.MipLevels = 1; sourceDesc.ArraySize = 1;
+        sourceDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        sourceDesc.SampleDesc.Count = 1;
+        sourceDesc.Usage = D3D11_USAGE_DEFAULT;
+        sourceDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        for (UINT frame = 0; frame < kSceneFrames; ++frame) {
+            const auto scene = make_test_scene(frame);
+            D3D11_SUBRESOURCE_DATA initialData{};
+            initialData.pSysMem = scene.data();
+            initialData.SysMemPitch = kSourceWidth * sizeof(std::uint32_t);
+            ComPtr<ID3D11Texture2D> sourceTexture;
+            hr = device->CreateTexture2D(&sourceDesc, &initialData, &sourceTexture);
+            if (FAILED(hr)) {
+                if (error) *error = L"Не удалось создать текстуры тестовой сцены.";
+                return hr;
+            }
+            hr = device->CreateShaderResourceView(sourceTexture.Get(), nullptr, &sourceViews[frame]);
+            if (FAILED(hr)) return hr;
+        }
         D3D11_TEXTURE2D_DESC outputDesc{};
         outputDesc.Width = kOutputWidth; outputDesc.Height = kOutputHeight; outputDesc.MipLevels = 1; outputDesc.ArraySize = 1;
         outputDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; outputDesc.SampleDesc.Count = 1;
@@ -167,7 +183,7 @@ HRESULT run_fsr_benchmark(const wchar_t* shaderPath, FsrBenchmarkResults* result
         constexpr std::array<ScaleMode, 3> modes{ScaleMode::quality, ScaleMode::balanced, ScaleMode::performance};
         constexpr std::array<float, 3> sharpness{0.0f, 1.5f, 1.5f};
         for (std::size_t i = 0; i < modes.size(); ++i) {
-            hr = measure_profile(device.Get(), context.Get(), scaler, sourceView.Get(), outputView.Get(),
+            hr = measure_profile(device.Get(), context.Get(), scaler, sourceViews, outputView.Get(),
                 modes[i], sharpness[i], &results->gpu_ms[i], &results->cpu_submit_ms[i]);
             if (FAILED(hr)) {
                 if (error) *error = L"FSR benchmark did not complete. The GPU may be busy or the driver may have reset.";

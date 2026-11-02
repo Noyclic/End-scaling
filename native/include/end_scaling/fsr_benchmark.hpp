@@ -8,6 +8,7 @@ struct FsrBenchmarkResults {
     double gpu_ms[3]{};
     double cpu_submit_ms[3]{};
     std::uint32_t measured_frames = 0;
+    std::uint32_t scene_frames = 0;
     std::uint32_t source_width = 0;
     std::uint32_t source_height = 0;
     std::uint32_t output_width = 0;

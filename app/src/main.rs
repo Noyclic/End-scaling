@@ -195,6 +195,15 @@ mod app {
         }
     }
 
+    fn choose_profile(gpu_ms: [f64; 3], cpu_ms: [f64; 3], budget_ms: f64) -> i32 {
+        let fits = |index: usize| {
+            gpu_ms[index].is_finite() && cpu_ms[index].is_finite() &&
+                gpu_ms[index] > 0.0 && cpu_ms[index] > 0.0 &&
+                gpu_ms[index] <= budget_ms && cpu_ms[index] <= budget_ms
+        };
+        if fits(1) { 1 } else if fits(0) { 0 } else { 2 }
+    }
+
     fn scale_pointer_coordinate(position: i32, output_extent: i32, source_extent: i32) -> i32 {
         if output_extent <= 0 || source_extent <= 0 {
             return 0;
@@ -578,6 +587,10 @@ mod app {
     }
 
     unsafe fn run_fsr_benchmark(apply_recommended: bool) {
+        if !CAPTURE_HANDLE.is_null() {
+            set_status("Для точного бенчмарка сначала останови предпросмотр или оверлей.");
+            return;
+        }
         let Some(shader_path) = current_shader_path() else {
             set_status("Не найден файл шейдера FSR.");
             return;
@@ -610,19 +623,15 @@ mod app {
 
         let gpu_name = from_wide(&results.gpu_name);
         let frame_budget_ms = 1000.0 / 60.0;
-        let recommended = if results.gpu_ms[1] <= frame_budget_ms {
-            1
-        } else if results.gpu_ms[0] <= frame_budget_ms {
-            0
-        } else {
-            2
-        };
+        let recommended = choose_profile(results.gpu_ms, results.cpu_submit_ms, frame_budget_ms);
         let profile_names = ["Quality", "Balanced", "Performance"];
         let report = format!(
-            "FSR Fun Mark • тестовая сцена {}×{} → {}×{} • {} кадров на профиль\nGPU: {} • feature level 0x{:X} • RAM: {} MB (доступно {} MB) • VRAM: {} MB dedicated / {} MB shared • CPU threads: {}\nQuality: {:.2} ms GPU / {:.2} ms CPU   |   Balanced: {:.2} / {:.2} ms   |   Performance: {:.2} / {:.2} ms",
-            results.source_width, results.source_height,
+            "FSR Fun Mark • {} кадров тестовой сцены • {}×{} → {}×{} • {} кадров замера на профиль\nGPU: {} • CPU: {} • feature level 0x{:X} • RAM: {} MB (доступно {} MB) • VRAM: {} MB dedicated / {} MB shared • {} потоков\nQuality: {:.2} ms GPU / {:.2} ms CPU   |   Balanced: {:.2} / {:.2} ms   |   Performance: {:.2} / {:.2} ms",
+            results.scene_frames, results.source_width, results.source_height,
             results.output_width, results.output_height, results.measured_frames,
-            gpu_name, results.feature_level,
+            gpu_name,
+            env::var("PROCESSOR_IDENTIFIER").unwrap_or_else(|_| "не определён".to_string()),
+            results.feature_level,
             results.total_ram_mb, results.available_ram_mb,
             results.dedicated_vram_mb, results.shared_vram_mb, results.logical_processors,
             results.gpu_ms[0], results.cpu_submit_ms[0],
@@ -1295,9 +1304,24 @@ mod app {
     #[cfg(test)]
     mod tests {
         use super::{
-            pack_mouse_coordinates, scale_pointer_coordinate, scaled_client_size,
+            choose_profile, pack_mouse_coordinates, scale_pointer_coordinate, scaled_client_size,
             signed_high_word, signed_low_word,
         };
+
+        #[test]
+        fn auto_setup_prefers_balanced_when_both_timings_fit() {
+            assert_eq!(choose_profile([12.0, 13.0, 3.0], [2.0, 2.5, 1.0], 16.67), 1);
+        }
+
+        #[test]
+        fn auto_setup_uses_quality_when_balanced_exceeds_budget() {
+            assert_eq!(choose_profile([15.0, 18.0, 4.0], [2.0, 2.0, 1.0], 16.67), 0);
+        }
+
+        #[test]
+        fn auto_setup_falls_back_to_performance_when_fsr_is_too_slow() {
+            assert_eq!(choose_profile([19.0, 20.0, 4.0], [3.0, 3.0, 1.0], 16.67), 2);
+        }
 
         #[test]
         fn balanced_profile_scales_and_aligns_dimensions() {
