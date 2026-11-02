@@ -15,6 +15,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <iterator>
@@ -73,6 +74,12 @@ public:
             HRESULT hr = create_d3d_device();
             if (FAILED(hr)) {
                 if (error) *error = hr_text(L"Hardware Direct3D 11 device creation", hr);
+                return hr;
+            }
+
+            hr = create_gpu_timing_queries();
+            if (FAILED(hr)) {
+                if (error) *error = hr_text(L"GPU timing query creation", hr);
                 return hr;
             }
 
@@ -141,16 +148,96 @@ public:
         }
     }
 
-    void get_stats(double* fps, double* lastSubmitMs, std::uint64_t* frames) const noexcept {
+    void get_stats(double* fps, double* lastSubmitMs, double* gpuMs,
+                   std::uint64_t* frames) const noexcept {
         const std::uint64_t count = renderedFrames_.load(std::memory_order_relaxed);
         const double elapsed = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - captureStartedAt_).count();
         if (fps) *fps = elapsed > 0.0 ? static_cast<double>(count) / elapsed : 0.0;
         if (lastSubmitMs) *lastSubmitMs = lastSubmitMs_.load(std::memory_order_relaxed);
+        if (gpuMs) *gpuMs = lastGpuMs_.load(std::memory_order_relaxed);
         if (frames) *frames = count;
     }
 
 private:
+    struct GpuTimingSlot {
+        ComPtr<ID3D11Query> disjoint;
+        ComPtr<ID3D11Query> start;
+        ComPtr<ID3D11Query> end;
+        bool pending = false;
+    };
+
+    HRESULT create_gpu_timing_queries() {
+        D3D11_QUERY_DESC desc{};
+        desc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+        for (auto& slot : gpuTimings_) {
+            HRESULT hr = device_->CreateQuery(&desc, &slot.disjoint);
+            if (FAILED(hr)) return hr;
+            desc.Query = D3D11_QUERY_TIMESTAMP;
+            hr = device_->CreateQuery(&desc, &slot.start);
+            if (FAILED(hr)) return hr;
+            hr = device_->CreateQuery(&desc, &slot.end);
+            if (FAILED(hr)) return hr;
+            desc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+        }
+        return S_OK;
+    }
+
+    // Read only completed queries. DONOTFLUSH avoids forcing the GPU to submit
+    // work just to update diagnostics; a busy slot is simply checked next frame.
+    void collect_gpu_timings() noexcept {
+        for (auto& slot : gpuTimings_) {
+            if (!slot.pending) continue;
+
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint{};
+            UINT64 begin = 0;
+            UINT64 end = 0;
+            const HRESULT disjointHr = context_->GetData(
+                slot.disjoint.Get(), &disjoint, sizeof(disjoint),
+                D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            const HRESULT beginHr = context_->GetData(
+                slot.start.Get(), &begin, sizeof(begin),
+                D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            const HRESULT endHr = context_->GetData(
+                slot.end.Get(), &end, sizeof(end),
+                D3D11_ASYNC_GETDATA_DONOTFLUSH);
+
+            if (disjointHr == S_FALSE || beginHr == S_FALSE || endHr == S_FALSE) {
+                continue;
+            }
+
+            slot.pending = false;
+            if (SUCCEEDED(disjointHr) && SUCCEEDED(beginHr) && SUCCEEDED(endHr) &&
+                !disjoint.Disjoint && disjoint.Frequency != 0 && end >= begin) {
+                const double milliseconds =
+                    static_cast<double>(end - begin) * 1000.0 /
+                    static_cast<double>(disjoint.Frequency);
+                lastGpuMs_.store(milliseconds, std::memory_order_relaxed);
+            }
+        }
+    }
+
+    GpuTimingSlot* begin_gpu_timing() noexcept {
+        for (std::size_t offset = 0; offset < gpuTimings_.size(); ++offset) {
+            const std::size_t index = (gpuTimingCursor_ + offset) % gpuTimings_.size();
+            auto& slot = gpuTimings_[index];
+            if (slot.pending) continue;
+            context_->Begin(slot.disjoint.Get());
+            context_->End(slot.start.Get());
+            return &slot;
+        }
+        return nullptr;
+    }
+
+    void end_gpu_timing(GpuTimingSlot* slot) noexcept {
+        if (!slot) return;
+        context_->End(slot->end.Get());
+        context_->End(slot->disjoint.Get());
+        slot->pending = true;
+        gpuTimingCursor_ =
+            (static_cast<std::size_t>(slot - gpuTimings_.data()) + 1) % gpuTimings_.size();
+    }
+
     HRESULT create_d3d_device() {
         constexpr D3D_FEATURE_LEVEL levels[] = {
             D3D_FEATURE_LEVEL_11_0,
@@ -244,6 +331,7 @@ private:
         std::lock_guard<std::mutex> guard(mutex_);
         if (!running_) return;
         try {
+            collect_gpu_timings();
             auto frame = sender.TryGetNextFrame();
             if (!frame) return;
 
@@ -284,9 +372,11 @@ private:
             if (FAILED(device_->CreateShaderResourceView(frameTexture.Get(), nullptr, &sourceView))) return;
             if (FAILED(resize_output())) return;
 
+            GpuTimingSlot* gpuTiming = begin_gpu_timing();
             const auto submitStart = std::chrono::steady_clock::now();
             hr = scaler_.draw(sourceView.Get(), backBuffer_.Get(), mode_,
                 mode_ == ScaleMode::quality ? 0.0f : 1.5f);
+            end_gpu_timing(gpuTiming);
             if (FAILED(hr)) return;
 
             const HRESULT present = swapChain_->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
@@ -351,6 +441,9 @@ private:
     std::chrono::steady_clock::time_point captureStartedAt_{};
     std::atomic<std::uint64_t> renderedFrames_{0};
     std::atomic<double> lastSubmitMs_{0.0};
+    std::atomic<double> lastGpuMs_{0.0};
+    std::array<GpuTimingSlot, 4> gpuTimings_{};
+    std::size_t gpuTimingCursor_ = 0;
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
@@ -384,13 +477,15 @@ void* start_window_capture(HWND source, HWND output, std::uint32_t mode,
 }
 
 void get_window_capture_stats(void* handle, double* fps,
-                               double* lastSubmitMs, std::uint64_t* frames) noexcept {
+                               double* lastSubmitMs, double* gpuMs,
+                               std::uint64_t* frames) noexcept {
     if (fps) *fps = 0.0;
     if (lastSubmitMs) *lastSubmitMs = 0.0;
+    if (gpuMs) *gpuMs = 0.0;
     if (frames) *frames = 0;
     if (!handle) return;
     auto* capture = static_cast<std::shared_ptr<WindowCapture>*>(handle);
-    (*capture)->get_stats(fps, lastSubmitMs, frames);
+    (*capture)->get_stats(fps, lastSubmitMs, gpuMs, frames);
 }
 
 void stop_window_capture(void* handle) noexcept {
@@ -414,8 +509,9 @@ extern "C" __declspec(dllexport) void* __cdecl es_capture_start(
 }
 
 extern "C" __declspec(dllexport) int __cdecl es_capture_get_stats(
-    void* handle, double* fps, double* lastSubmitMs, std::uint64_t* frames) noexcept {
-    end_scaling::get_window_capture_stats(handle, fps, lastSubmitMs, frames);
+    void* handle, double* fps, double* lastSubmitMs, double* gpuMs,
+    std::uint64_t* frames) noexcept {
+    end_scaling::get_window_capture_stats(handle, fps, lastSubmitMs, gpuMs, frames);
     return handle != nullptr ? 1 : 0;
 }
 

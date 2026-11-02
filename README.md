@@ -2,7 +2,7 @@
 
 A lightweight Windows game-upscaling prototype built as a Rust application with a native C++ / Direct3D 11 graphics core.
 
-> **Current state:** the Windows Graphics Capture → Direct3D 11 scaling → preview path is implemented and builds on Windows. It captures a selected application window into a two-buffer GPU frame pool, scales incoming frames, and presents them in a separate preview window. This is an engineering preview, not yet a game-FPS booster: it does not replace the original game window or forward mouse/keyboard input, so the game still renders its own frames at its normal rate.
+> **Current state:** the Windows Graphics Capture → Direct3D 11 scaling pipeline builds on Windows and supports both a separate preview and an experimental click-through output overlay aligned to the selected window. The overlay is still a compatibility prototype. It does not change a game's internal render resolution, and no FPS improvement is claimed until the game is configured to render fewer pixels and the full path is measured on real hardware.
 
 ## Design goals
 
@@ -19,9 +19,10 @@ A lightweight Windows game-upscaling prototype built as a Rust application with 
 2. Windows Graphics Capture targets that HWND via IGraphicsCaptureItemInterop::CreateForWindow.
 3. A Direct3D11CaptureFramePool with two buffers is created using CreateFreeThreaded.
 4. The callback drains stale queued frames and keeps the newest one to avoid adding a frame queue's worth of latency.
-5. Direct3D 11 scales that GPU texture into a separate preview window's swap chain.
+5. Direct3D 11 scales that GPU texture into the preview or overlay window's swap chain.
+6. In overlay mode, a lightweight window-position timer keeps the output aligned with the source window and hides it when the game is not foreground.
 
-The current preview is deliberately separate from the source game. It is useful for validating window capture, aspect/resolution handling, the D3D11 shaders, and frame pacing before adding a full-screen game overlay and safe input routing.
+The preview remains separate from the source game. Overlay mode places the scaled output over the selected window, but its compatibility and input behavior still require testing with ordinary windowed games.
 
 ## Scaling modes
 
@@ -40,10 +41,11 @@ FSR 1 is a spatial upscaler, not frame generation. It can help only when the gam
 While preview is running, the main window reports:
 
 - **Preview FPS:** successfully presented preview frames divided by elapsed capture-session time. This is not the game's own FPS.
-- **CPU submit:** CPU wall-clock time spent in the scaler draw call and the non-blocking Present call. This is not GPU execution time and does not include the wait for GPU completion.
-- **Frames:** total preview frames successfully presented in this session.
+- **GPU scale:** the latest completed D3D11 timestamp measurement around the scaling passes. A four-slot query ring is polled without flushing or waiting for the GPU; if a query is not ready, it is checked again on a later frame. This excludes desktop composition and game rendering.
+- **CPU submit:** CPU wall-clock time spent in the scaler draw call and the non-blocking Present call. It is not GPU execution time.
+- **Frames:** total output frames successfully presented in this session.
 
-These counters are intentionally lightweight and use relaxed atomics; they do not read back GPU resources or add a sampling thread.
+The GPU timer uses a small fixed set of timestamp queries and never performs a blocking readback. All statistics remain diagnostic: overlay FPS is not the game's FPS.
 
 ## Build on Windows
 
@@ -65,8 +67,9 @@ The packaged application is written to dist/. GitHub Actions builds on pushes to
 
 - The app checks for a hardware Direct3D 11 adapter and compiles all shader entry points at startup.
 - The window list enumerates visible top-level windows outside End-scaling itself.
-- The selected window can be captured into a separate, resizable preview.
+- The selected window can be captured into a separate, resizable preview or experimental overlay output.
 - The selected profile generates a suggested lower in-game resolution based on the selected window's client size.
+- The app reports asynchronously sampled GPU scaling time alongside CPU submission time.
 - Profile selection is saved under %APPDATA%\\EndScaling\\settings.ini.
 
 The suggested resolution is informational only; the app does not change game settings or inject into games.
@@ -82,11 +85,10 @@ The UI has a separate **Тестовый оверлей** action. It creates a b
 
 The overlay only replaces the visible presentation with the captured/scaled frame. It does **not** lower the game's render resolution automatically, and its output FPS is not the game's FPS. No performance gain is claimed yet.
 
-## Not implemented yet
+## Remaining work before claiming an FPS gain
 
-- A full-screen output overlay that replaces the visible game image.
-- Mouse-coordinate forwarding / input passthrough to the original game.
-- Robust per-game resize, HDR, exclusive-fullscreen, protected-content, and device-loss handling.
-- End-to-end frame-time and latency measurements on Intel Iris Xe.
+- Automatic per-game render-resolution control is not implemented. Set a lower resolution or render scale inside the game first; the app only captures and upscales the resulting image.
+- Overlay behavior, mouse input, HDR, exclusive-fullscreen, protected-content, and device-loss handling need real Windows testing.
+- End-to-end game frame-time, latency, and GPU-load measurements are still needed on Intel Iris Xe.
 
-Until overlay and input routing are implemented and measured on real hardware, **no FPS gain is claimed**. The next milestone is a properly synchronized output overlay, tested carefully in ordinary windowed games before attempting any anti-cheat-protected titles.
+Until the game is demonstrably rendering fewer pixels and these measurements show a net benefit, **no FPS gain is claimed**. Do not test with anti-cheat-protected games yet.

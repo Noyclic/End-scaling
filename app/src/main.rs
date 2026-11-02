@@ -89,6 +89,7 @@ mod app {
             handle: *mut c_void,
             fps: *mut f64,
             submit_ms: *mut f64,
+            gpu_ms: *mut f64,
             frames: *mut u64,
         ) -> i32;
     }
@@ -348,17 +349,19 @@ mod app {
         }
         let mut preview_fps = 0.0f64;
         let mut submit_ms = 0.0f64;
+        let mut gpu_ms = 0.0f64;
         let mut frames = 0u64;
         if es_capture_get_stats(
             CAPTURE_HANDLE,
             &mut preview_fps,
             &mut submit_ms,
+            &mut gpu_ms,
             &mut frames,
         ) != 0 {
             let label = if OVERLAY_MODE {
-                format!("Оверлей: {preview_fps:.1} FPS вывода  •  CPU submit: {submit_ms:.2} ms  •  кадров: {frames}")
+                format!("Оверлей: {preview_fps:.1} FPS  •  GPU scale: {gpu_ms:.2} ms  •  CPU submit: {submit_ms:.2} ms  •  кадров: {frames}")
             } else {
-                format!("Предпросмотр: {preview_fps:.1} FPS  •  CPU submit: {submit_ms:.2} ms  •  кадров: {frames}")
+                format!("Предпросмотр: {preview_fps:.1} FPS  •  GPU scale: {gpu_ms:.2} ms  •  CPU submit: {submit_ms:.2} ms  •  кадров: {frames}")
             };
             set_status(&label);
         }
@@ -503,7 +506,7 @@ mod app {
         }
 
         if overlay && !HOTKEY_REGISTERED {
-            set_status("Не удалось зарегистрировать F9. Оверлей не запущен ради безопасного выхода.");
+            set_status("Не удалось зарегистрировать Ctrl+Alt+F9. Оверлей не запущен ради безопасного выхода.");
             return;
         }
 
