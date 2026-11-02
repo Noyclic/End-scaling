@@ -10,14 +10,14 @@ mod app {
     use windows_sys::Win32::{
         UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey},
         Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-        Graphics::Gdi::{GetStockObject, HBRUSH, BLACK_BRUSH, WHITE_BRUSH},
+        Graphics::Gdi::{ClientToScreen, GetStockObject, HBRUSH, BLACK_BRUSH, WHITE_BRUSH},
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentProcessId},
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows,
             GetClientRect, GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
             GetWindowThreadProcessId, GetWindowRect, GetForegroundWindow, IsIconic, IsZoomed, IsWindow,
             IsWindowVisible, KillTimer, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
-            SetCapture, ReleaseCapture, ClientToScreen, SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
+            SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
             TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HWND_TOPMOST, MSG,
             SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, WNDCLASSW,
             WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_MAXIMIZEBOX, WS_OVERLAPPED,
@@ -67,14 +67,6 @@ mod app {
     const WM_XBUTTONUP_VALUE: u32 = 0x020C;
     const WM_XBUTTONDBLCLK_VALUE: u32 = 0x020D;
     const WM_MOUSEHWHEEL_VALUE: u32 = 0x020E;
-
-    const MK_LBUTTON_VALUE: WPARAM = 0x0001;
-    const MK_RBUTTON_VALUE: WPARAM = 0x0002;
-    const MK_MBUTTON_VALUE: WPARAM = 0x0010;
-    const MK_XBUTTON1_VALUE: WPARAM = 0x0020;
-    const MK_XBUTTON2_VALUE: WPARAM = 0x0040;
-    const MK_BUTTON_MASK: WPARAM = MK_LBUTTON_VALUE | MK_RBUTTON_VALUE |
-        MK_MBUTTON_VALUE | MK_XBUTTON1_VALUE | MK_XBUTTON2_VALUE;
 
     const MA_NOACTIVATE_VALUE: LRESULT = 3;
 
@@ -810,26 +802,9 @@ mod app {
             pack_mouse_coordinates(source_x, source_y)
         };
 
-        let is_down = matches!(
-            message,
-            WM_LBUTTONDOWN_VALUE | WM_RBUTTONDOWN_VALUE |
-            WM_MBUTTONDOWN_VALUE | WM_XBUTTONDOWN_VALUE
-        );
-        let is_up = matches!(
-            message,
-            WM_LBUTTONUP_VALUE | WM_RBUTTONUP_VALUE |
-            WM_MBUTTONUP_VALUE | WM_XBUTTONUP_VALUE
-        );
-        if is_down {
-            SetCapture(overlay);
-        }
-
-        // Only basic Win32 mouse messages are synthesized. Raw Input is not.
+        // Only basic Win32 mouse messages are synthesized. Raw Input and
+        // global drag capture are intentionally not intercepted by this path.
         PostMessageW(source, message, wparam, forwarded_lparam);
-
-        if is_up && (wparam & MK_BUTTON_MASK) == 0 {
-            ReleaseCapture();
-        }
     }
 
     unsafe fn create_output_window(overlay: bool, source: HWND) -> HWND {
