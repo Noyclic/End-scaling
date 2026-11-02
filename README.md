@@ -85,7 +85,7 @@ The **Применить низкое разрешение** action reduces the 
 - **Вернуть размер**, **Остановить**, closing the output preview, or exiting End-scaling restores the original window rectangle.
 - A recovery marker is written under %APPDATA%\\EndScaling\\window_restore.ini before resizing. If End-scaling exits unexpectedly, the next launch attempts recovery only when the same window handle and process ID still match and the window remains smaller at the saved position.
 - This changes the physical client size; it is not a game-specific render-scale API. Some games ignore or constrain window resizing.
-- The enlarged capture is shown in the separate preview or the experimental overlay. In overlay mode, basic Win32 mouse move, button, and wheel coordinates are mapped to the smaller source client area. This is not yet a finished full-screen play-through path: Raw Input, DirectInput, relative mouse motion, controllers, and some games' custom input paths are unsupported.
+- The enlarged capture is shown in the separate preview or the experimental overlay. In overlay mode, basic Win32 mouse move, button, and wheel coordinates are mapped to the smaller source client area. The overlay captures the pointer while a button is held so a drag can continue outside its rectangle. This is not yet a finished full-screen play-through path: Raw Input, DirectInput, relative mouse motion, controllers, and some games' custom input paths are unsupported.
 
 This is a foundation for reducing source-image render dimensions, not a guarantee of higher game FPS.
 
@@ -103,6 +103,18 @@ Basic Win32 mouse move, button, and wheel messages are mapped from output coordi
 - Do not use this mode with exclusive-fullscreen or anti-cheat-protected games.
 
 The overlay displays the captured/scaled frame at the original client-area size while the source window can remain smaller. It still does **not** modify a game's internal render scale, and output FPS is not the game's FPS. Mouse remapping is limited to basic Win32 messages. No performance gain is claimed until actual game frame times are measured.
+
+## First manual test (safe windowed test)
+
+1. Open the latest successful **Build Windows** workflow run and download its **End-scaling-Windows** artifact. Extract the complete folder; keep `shaders/` and `third_party/` beside `EndScaling.exe`.
+2. Start a normal, unmaximized, windowed game without anti-cheat. Run End-scaling at the same privilege level as the game (normally, do not use administrator mode).
+3. In End-scaling, select the game window and start with **Balanced**. Click **Применить низкое разрешение** and confirm that the game client area actually becomes smaller.
+4. Click **Тестовый оверлей**, then switch back to the game. The overlay is shown only while the selected game window is foreground.
+5. Check picture alignment, mouse movement, clicks, click-and-drag beyond the window edges, and wheel input. Stop if the image or input becomes unstable.
+6. Press **Ctrl+Alt+F9** to stop. Confirm that the game window returns to its original size. The **Stop** button in the app is an alternative exit.
+7. Compare the game's own FPS counter or a repeatable benchmark before and after. End-scaling's **output FPS is not the game's FPS**; use the in-game counter for performance results.
+
+Do not use exclusive-fullscreen or anti-cheat-protected games for this first test. Raw Input/DirectInput games may not receive the synthetic mouse messages used by the prototype, even though ordinary Win32 pointer input works. If a game rejects window resizing, End-scaling cannot force its internal render resolution down.
 
 ## Remaining work before claiming an FPS gain
 
