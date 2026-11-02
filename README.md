@@ -73,7 +73,7 @@ The suggested resolution is informational only; the app does not change game set
 
 ## Experimental game overlay
 
-The UI has a separate **Тестовый оверлей** action. It creates a borderless topmost output window aligned to the selected game's window, keeps it hidden while another app is foreground, and uses a non-activating click-through window style so pointer input can reach the game beneath it. The position is checked by a low-frequency UI timer and only updated when the source window actually moves or resizes.
+The UI has a separate **Тестовый оверлей** action. It creates a borderless topmost output window aligned to the selected game's window, keeps it hidden while another app is foreground, and uses a non-activating click-through window style so pointer input can reach the game beneath it. The position is checked by a low-frequency UI timer and only updated when the source window actually moves or resizes. When the overlay is hidden after Alt+Tab (or a preview is minimized), captured frames are released without running the scaler or presenting, avoiding unnecessary GPU work while inactive.
 
 - Start with a normal windowed or borderless-window game; switch back to the game after enabling the overlay.
 - Press **Ctrl+Alt+F9** at any time to stop capture and remove the overlay.
