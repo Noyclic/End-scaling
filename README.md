@@ -71,6 +71,17 @@ The packaged application is written to dist/. GitHub Actions builds on pushes to
 
 The suggested resolution is informational only; the app does not change game settings or inject into games.
 
+## Experimental game overlay
+
+The UI has a separate **Тестовый оверлей** action. It creates a borderless topmost output window aligned to the selected game's window, keeps it hidden while another app is foreground, and uses a non-activating click-through window style so pointer input can reach the game beneath it. The position is checked by a low-frequency UI timer and only updated when the source window actually moves or resizes.
+
+- Start with a normal windowed or borderless-window game; switch back to the game after enabling the overlay.
+- Press **Ctrl+Alt+F9** at any time to stop capture and remove the overlay.
+- This is experimental. Input pass-through and visual alignment still need hands-on testing on Windows 10/11 and on the target GPU.
+- Do not use this mode with exclusive-fullscreen or anti-cheat-protected games until compatibility has been verified.
+
+The overlay only replaces the visible presentation with the captured/scaled frame. It does **not** lower the game's render resolution automatically, and its output FPS is not the game's FPS. No performance gain is claimed yet.
+
 ## Not implemented yet
 
 - A full-screen output overlay that replaces the visible game image.
