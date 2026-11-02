@@ -255,6 +255,11 @@ private:
                 frame = std::move(newer);
             }
 
+            // When the output is hidden (for example after Alt+Tab), release
+            // the newest capture frame without running the scaler or Present.
+            // This keeps the inactive overlay from consuming avoidable GPU time.
+            if (!IsWindowVisible(output_) || IsIconic(output_)) return;
+
             const SizeInt32 content = frame.ContentSize();
             if (content.Width <= 0 || content.Height <= 0) return;
             if (content.Width != size_.Width || content.Height != size_.Height) {
