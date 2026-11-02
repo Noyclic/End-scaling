@@ -450,7 +450,7 @@ mod app {
         match fs::write(&path, contents) {
             Ok(()) => {
                 SELECTED_PROFILE = index;
-                set_status("Профиль сохранён. Разрешение игры нужно выставить вручную.");
+                set_status("Профиль сохранён. Низкое разрешение можно применить к выбранному оконному приложению.");
                 update_resolution_label();
             }
             Err(error) => set_status(&format!("Не удалось сохранить настройки: {error}")),
