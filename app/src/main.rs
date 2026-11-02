@@ -14,9 +14,9 @@ mod app {
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentProcessId},
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows,
-            GetClientRect, GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
+            GetCapture, GetClientRect, GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
             GetWindowThreadProcessId, GetWindowRect, GetForegroundWindow, IsIconic, IsZoomed, IsWindow,
-            IsWindowVisible, KillTimer, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
+            IsWindowVisible, KillTimer, PostMessageW, PostQuitMessage, RegisterClassW, ReleaseCapture, SendMessageW, SetCapture,
             SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
             TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HWND_TOPMOST, MSG,
             SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, WNDCLASSW,
@@ -67,6 +67,15 @@ mod app {
     const WM_XBUTTONUP_VALUE: u32 = 0x020C;
     const WM_XBUTTONDBLCLK_VALUE: u32 = 0x020D;
     const WM_MOUSEHWHEEL_VALUE: u32 = 0x020E;
+    const WM_CANCELMODE_VALUE: u32 = 0x001F;
+    const WM_CAPTURECHANGED_VALUE: u32 = 0x0215;
+    const MK_LBUTTON_VALUE: usize = 0x0001;
+    const MK_RBUTTON_VALUE: usize = 0x0002;
+    const MK_MBUTTON_VALUE: usize = 0x0010;
+    const MK_XBUTTON1_VALUE: usize = 0x0020;
+    const MK_XBUTTON2_VALUE: usize = 0x0040;
+    const MK_MOUSE_BUTTONS_VALUE: usize = MK_LBUTTON_VALUE | MK_RBUTTON_VALUE |
+        MK_MBUTTON_VALUE | MK_XBUTTON1_VALUE | MK_XBUTTON2_VALUE;
 
     const MA_NOACTIVATE_VALUE: LRESULT = 3;
 
@@ -683,24 +692,61 @@ mod app {
     ) -> LRESULT {
         match message {
             WM_MOUSEACTIVATE_VALUE if OVERLAY_MODE => MA_NOACTIVATE_VALUE,
-            WM_MOUSEMOVE_VALUE | WM_LBUTTONDOWN_VALUE | WM_LBUTTONUP_VALUE |
-            WM_LBUTTONDBLCLK_VALUE | WM_RBUTTONDOWN_VALUE | WM_RBUTTONUP_VALUE |
-            WM_RBUTTONDBLCLK_VALUE | WM_MBUTTONDOWN_VALUE | WM_MBUTTONUP_VALUE |
-            WM_MBUTTONDBLCLK_VALUE | WM_MOUSEWHEEL_VALUE | WM_MOUSEHWHEEL_VALUE |
-            WM_XBUTTONDOWN_VALUE | WM_XBUTTONUP_VALUE | WM_XBUTTONDBLCLK_VALUE
+
+            // Keep receiving move/up messages while a drag goes outside the
+            // overlay. Without capture, the game can be left with a stuck
+            // mouse button when the pointer leaves the output rectangle.
+            WM_LBUTTONDOWN_VALUE | WM_RBUTTONDOWN_VALUE | WM_MBUTTONDOWN_VALUE |
+            WM_XBUTTONDOWN_VALUE | WM_LBUTTONDBLCLK_VALUE | WM_RBUTTONDBLCLK_VALUE |
+            WM_MBUTTONDBLCLK_VALUE | WM_XBUTTONDBLCLK_VALUE
+                if OVERLAY_MODE && !CAPTURE_SOURCE_HWND.is_null() => {
+                    SetCapture(hwnd);
+                    forward_overlay_mouse_message(
+                        hwnd, CAPTURE_SOURCE_HWND, message, wparam, lparam,
+                    );
+                    0
+                }
+
+            WM_LBUTTONUP_VALUE | WM_RBUTTONUP_VALUE | WM_MBUTTONUP_VALUE |
+            WM_XBUTTONUP_VALUE
+                if OVERLAY_MODE && !CAPTURE_SOURCE_HWND.is_null() => {
+                    forward_overlay_mouse_message(
+                        hwnd, CAPTURE_SOURCE_HWND, message, wparam, lparam,
+                    );
+                    if (wparam & MK_MOUSE_BUTTONS_VALUE) == 0 && GetCapture() == hwnd {
+                        ReleaseCapture();
+                    }
+                    0
+                }
+
+            WM_MOUSEMOVE_VALUE | WM_MOUSEWHEEL_VALUE | WM_MOUSEHWHEEL_VALUE
                 if OVERLAY_MODE && !CAPTURE_SOURCE_HWND.is_null() => {
                     forward_overlay_mouse_message(
                         hwnd, CAPTURE_SOURCE_HWND, message, wparam, lparam,
                     );
                     0
                 }
+
+            WM_CANCELMODE_VALUE | WM_CAPTURECHANGED_VALUE if OVERLAY_MODE => {
+                if message == WM_CANCELMODE_VALUE && GetCapture() == hwnd {
+                    ReleaseCapture();
+                }
+                0
+            }
+
             WM_CLOSE => {
+                if GetCapture() == hwnd {
+                    ReleaseCapture();
+                }
                 stop_capture_only();
                 restore_source_resolution();
                 DestroyWindow(hwnd);
                 0
             }
             WM_DESTROY => {
+                if GetCapture() == hwnd {
+                    ReleaseCapture();
+                }
                 if PREVIEW_HWND == hwnd {
                     PREVIEW_HWND = null_mut();
                 }
@@ -752,6 +798,9 @@ mod app {
             IsIconic(CAPTURE_SOURCE_HWND) == 0 &&
             GetForegroundWindow() == CAPTURE_SOURCE_HWND;
         if !should_show {
+            if GetCapture() == PREVIEW_HWND {
+                ReleaseCapture();
+            }
             if IsWindowVisible(PREVIEW_HWND) != 0 {
                 ShowWindow(PREVIEW_HWND, SW_HIDE);
             }
@@ -957,6 +1006,9 @@ mod app {
         stop_capture_only();
         if !PREVIEW_HWND.is_null() && IsWindow(PREVIEW_HWND) != 0 {
             let hwnd = PREVIEW_HWND;
+            if GetCapture() == hwnd {
+                ReleaseCapture();
+            }
             ShowWindow(hwnd, SW_HIDE);
             DestroyWindow(hwnd);
         }
