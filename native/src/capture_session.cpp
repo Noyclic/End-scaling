@@ -69,7 +69,7 @@ public:
 
             source_ = source;
             output_ = output;
-            mode_ = mode;
+            mode_.store(mode, std::memory_order_relaxed);
 
             HRESULT hr = create_d3d_device();
             if (FAILED(hr)) {
@@ -119,8 +119,14 @@ public:
             hasHandler_ = true;
 
             renderedFrames_.store(0, std::memory_order_relaxed);
+            droppedFrames_.store(0, std::memory_order_relaxed);
+            inactiveFrames_.store(0, std::memory_order_relaxed);
+            outputFps_.store(0.0, std::memory_order_relaxed);
             lastSubmitMs_.store(0.0, std::memory_order_relaxed);
-            captureStartedAt_ = std::chrono::steady_clock::now();
+            lastGpuMs_.store(0.0, std::memory_order_relaxed);
+            fpsWindowStartedAt_ = std::chrono::steady_clock::now();
+            fpsWindowFrames_ = 0;
+            wasOutputInactive_ = false;
             running_ = true;
             session_.StartCapture();
             return S_OK;
@@ -148,15 +154,19 @@ public:
         }
     }
 
+    void set_mode(ScaleMode mode) noexcept {
+        mode_.store(mode, std::memory_order_relaxed);
+    }
+
     void get_stats(double* fps, double* lastSubmitMs, double* gpuMs,
-                   std::uint64_t* frames) const noexcept {
-        const std::uint64_t count = renderedFrames_.load(std::memory_order_relaxed);
-        const double elapsed = std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - captureStartedAt_).count();
-        if (fps) *fps = elapsed > 0.0 ? static_cast<double>(count) / elapsed : 0.0;
+                   std::uint64_t* frames, std::uint64_t* dropped,
+                   std::uint64_t* inactive) const noexcept {
+        if (fps) *fps = outputFps_.load(std::memory_order_relaxed);
         if (lastSubmitMs) *lastSubmitMs = lastSubmitMs_.load(std::memory_order_relaxed);
         if (gpuMs) *gpuMs = lastGpuMs_.load(std::memory_order_relaxed);
-        if (frames) *frames = count;
+        if (frames) *frames = renderedFrames_.load(std::memory_order_relaxed);
+        if (dropped) *dropped = droppedFrames_.load(std::memory_order_relaxed);
+        if (inactive) *inactive = inactiveFrames_.load(std::memory_order_relaxed);
     }
 
 private:
@@ -346,7 +356,21 @@ private:
             // When the output is hidden (for example after Alt+Tab), release
             // the newest capture frame without running the scaler or Present.
             // This keeps the inactive overlay from consuming avoidable GPU time.
-            if (!IsWindowVisible(output_) || IsIconic(output_)) return;
+            if (!IsWindowVisible(output_) || IsIconic(output_)) {
+                inactiveFrames_.fetch_add(1, std::memory_order_relaxed);
+                outputFps_.store(0.0, std::memory_order_relaxed);
+                fpsWindowStartedAt_ = std::chrono::steady_clock::now();
+                fpsWindowFrames_ = 0;
+                wasOutputInactive_ = true;
+                return;
+            }
+
+            const auto frameNow = std::chrono::steady_clock::now();
+            if (wasOutputInactive_) {
+                fpsWindowStartedAt_ = frameNow;
+                fpsWindowFrames_ = 0;
+                wasOutputInactive_ = false;
+            }
 
             const SizeInt32 content = frame.ContentSize();
             if (content.Width <= 0 || content.Height <= 0) return;
@@ -373,25 +397,42 @@ private:
             if (FAILED(resize_output())) return;
 
             GpuTimingSlot* gpuTiming = begin_gpu_timing();
+            const ScaleMode activeMode = mode_.load(std::memory_order_relaxed);
             const auto submitStart = std::chrono::steady_clock::now();
-            hr = scaler_.draw(sourceView.Get(), backBuffer_.Get(), mode_,
-                mode_ == ScaleMode::quality ? 0.0f : 1.5f);
+            hr = scaler_.draw(sourceView.Get(), backBuffer_.Get(), activeMode,
+                activeMode == ScaleMode::quality ? 0.0f : 1.5f);
             end_gpu_timing(gpuTiming);
             if (FAILED(hr)) return;
 
             const HRESULT present = swapChain_->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
-            if (present == DXGI_ERROR_WAS_STILL_DRAWING) return;
+            if (present == DXGI_ERROR_WAS_STILL_DRAWING) {
+                droppedFrames_.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
             if (FAILED(present)) {
+                droppedFrames_.fetch_add(1, std::memory_order_relaxed);
                 if (present == DXGI_ERROR_DEVICE_REMOVED || present == DXGI_ERROR_DEVICE_RESET) {
                     running_ = false;
                 }
                 return;
             }
 
+            const auto presentedAt = std::chrono::steady_clock::now();
             const double elapsedMs = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - submitStart).count();
+                presentedAt - submitStart).count();
             lastSubmitMs_.store(elapsedMs, std::memory_order_relaxed);
             renderedFrames_.fetch_add(1, std::memory_order_relaxed);
+
+            ++fpsWindowFrames_;
+            const double fpsWindowSeconds = std::chrono::duration<double>(
+                presentedAt - fpsWindowStartedAt_).count();
+            if (fpsWindowSeconds >= 0.5) {
+                outputFps_.store(
+                    static_cast<double>(fpsWindowFrames_) / fpsWindowSeconds,
+                    std::memory_order_relaxed);
+                fpsWindowStartedAt_ = presentedAt;
+                fpsWindowFrames_ = 0;
+            }
         }
         catch (...) {
             // Never unwind C++ exceptions through a WinRT event callback.
@@ -434,12 +475,17 @@ private:
 
     HWND source_ = nullptr;
     HWND output_ = nullptr;
-    ScaleMode mode_ = ScaleMode::balanced;
+    std::atomic<ScaleMode> mode_{ScaleMode::balanced};
     bool running_ = false;
     bool hasHandler_ = false;
     std::mutex mutex_;
-    std::chrono::steady_clock::time_point captureStartedAt_{};
+    std::chrono::steady_clock::time_point fpsWindowStartedAt_{};
+    std::uint64_t fpsWindowFrames_ = 0; // guarded by mutex_
+    bool wasOutputInactive_ = false;    // guarded by mutex_
     std::atomic<std::uint64_t> renderedFrames_{0};
+    std::atomic<std::uint64_t> droppedFrames_{0};
+    std::atomic<std::uint64_t> inactiveFrames_{0};
+    std::atomic<double> outputFps_{0.0};
     std::atomic<double> lastSubmitMs_{0.0};
     std::atomic<double> lastGpuMs_{0.0};
     std::array<GpuTimingSlot, 4> gpuTimings_{};
@@ -476,16 +522,27 @@ void* start_window_capture(HWND source, HWND output, std::uint32_t mode,
     }
 }
 
+void set_window_capture_mode(void* handle, std::uint32_t mode) noexcept {
+    if (!handle) return;
+    const ScaleMode selected = mode == 0 ? ScaleMode::quality :
+                               mode == 2 ? ScaleMode::performance : ScaleMode::balanced;
+    auto* capture = static_cast<std::shared_ptr<WindowCapture>*>(handle);
+    (*capture)->set_mode(selected);
+}
+
 void get_window_capture_stats(void* handle, double* fps,
                                double* lastSubmitMs, double* gpuMs,
-                               std::uint64_t* frames) noexcept {
+                               std::uint64_t* frames, std::uint64_t* dropped,
+                               std::uint64_t* inactive) noexcept {
     if (fps) *fps = 0.0;
     if (lastSubmitMs) *lastSubmitMs = 0.0;
     if (gpuMs) *gpuMs = 0.0;
     if (frames) *frames = 0;
+    if (dropped) *dropped = 0;
+    if (inactive) *inactive = 0;
     if (!handle) return;
     auto* capture = static_cast<std::shared_ptr<WindowCapture>*>(handle);
-    (*capture)->get_stats(fps, lastSubmitMs, gpuMs, frames);
+    (*capture)->get_stats(fps, lastSubmitMs, gpuMs, frames, dropped, inactive);
 }
 
 void stop_window_capture(void* handle) noexcept {
@@ -508,10 +565,17 @@ extern "C" __declspec(dllexport) void* __cdecl es_capture_start(
     return handle;
 }
 
+extern "C" __declspec(dllexport) void __cdecl es_capture_set_mode(
+    void* handle, std::uint32_t mode) noexcept {
+    end_scaling::set_window_capture_mode(handle, mode);
+}
+
 extern "C" __declspec(dllexport) int __cdecl es_capture_get_stats(
     void* handle, double* fps, double* lastSubmitMs, double* gpuMs,
-    std::uint64_t* frames) noexcept {
-    end_scaling::get_window_capture_stats(handle, fps, lastSubmitMs, gpuMs, frames);
+    std::uint64_t* frames, std::uint64_t* dropped,
+    std::uint64_t* inactive) noexcept {
+    end_scaling::get_window_capture_stats(
+        handle, fps, lastSubmitMs, gpuMs, frames, dropped, inactive);
     return handle != nullptr ? 1 : 0;
 }
 

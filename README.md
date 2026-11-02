@@ -40,12 +40,14 @@ FSR 1 is a spatial upscaler, not frame generation. It can help only when the gam
 
 While preview is running, the main window reports:
 
-- **Preview FPS:** successfully presented preview frames divided by elapsed capture-session time. This is not the game's own FPS.
+- **Output FPS:** a rolling rate calculated from successfully presented output frames, not the game's own FPS. Its sampling window resets after the output becomes visible again, so time spent Alt+Tabbed does not dilute the next active measurement.
 - **GPU scale:** the latest completed D3D11 timestamp measurement around the scaling passes. A four-slot query ring is polled without flushing or waiting for the GPU; if a query is not ready, it is checked again on a later frame. This excludes desktop composition and game rendering.
 - **CPU submit:** CPU wall-clock time spent in the scaler draw call and the non-blocking Present call. It is not GPU execution time.
 - **Frames:** total output frames successfully presented in this session.
+- **Skipped:** frames rejected by DXGI back-pressure or presentation errors.
+- **Hidden:** capture callbacks where the output was hidden/minimized and scaling/presentation were skipped.
 
-The GPU timer uses a small fixed set of timestamp queries and never performs a blocking readback. All statistics remain diagnostic: overlay FPS is not the game's FPS.
+The GPU timer uses a small fixed set of timestamp queries and never performs a blocking readback. DXGI back-pressure is counted rather than waited on, and hidden callbacks are tracked separately. All statistics remain diagnostic: output FPS is not the game's FPS.
 
 ## Build on Windows
 
@@ -67,7 +69,7 @@ The packaged application is written to dist/. GitHub Actions builds on pushes to
 
 - The app checks for a hardware Direct3D 11 adapter and compiles all shader entry points at startup.
 - The window list enumerates visible top-level windows outside End-scaling itself.
-- The selected window can be captured into a separate, resizable preview or experimental overlay output.
+- The selected window can be captured into a separate, resizable preview or experimental overlay output. Scaling profiles can be changed while capture is active; the native renderer reads the selected mode atomically without restarting the capture session.
 - The selected profile generates a suggested lower in-game resolution based on the selected window's client size.
 - The app reports asynchronously sampled GPU scaling time alongside CPU submission time.
 - Profile selection is saved under %APPDATA%\\EndScaling\\settings.ini.

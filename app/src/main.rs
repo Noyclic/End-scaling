@@ -85,12 +85,15 @@ mod app {
         ) -> *mut c_void;
 
         fn es_capture_stop(handle: *mut c_void);
+        fn es_capture_set_mode(handle: *mut c_void, mode: u32);
         fn es_capture_get_stats(
             handle: *mut c_void,
             fps: *mut f64,
             submit_ms: *mut f64,
             gpu_ms: *mut f64,
             frames: *mut u64,
+            dropped: *mut u64,
+            inactive: *mut u64,
         ) -> i32;
     }
 
@@ -351,17 +354,21 @@ mod app {
         let mut submit_ms = 0.0f64;
         let mut gpu_ms = 0.0f64;
         let mut frames = 0u64;
+        let mut dropped = 0u64;
+        let mut inactive = 0u64;
         if es_capture_get_stats(
             CAPTURE_HANDLE,
             &mut preview_fps,
             &mut submit_ms,
             &mut gpu_ms,
             &mut frames,
+            &mut dropped,
+            &mut inactive,
         ) != 0 {
             let label = if OVERLAY_MODE {
-                format!("Оверлей: {preview_fps:.1} FPS  •  GPU scale: {gpu_ms:.2} ms  •  CPU submit: {submit_ms:.2} ms  •  кадров: {frames}")
+                format!("Оверлей: {preview_fps:.1} FPS • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\nКадры: {frames} • пропуски: {dropped} • скрыто: {inactive}")
             } else {
-                format!("Предпросмотр: {preview_fps:.1} FPS  •  GPU scale: {gpu_ms:.2} ms  •  CPU submit: {submit_ms:.2} ms  •  кадров: {frames}")
+                format!("Вывод: {preview_fps:.1} FPS • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\nКадры: {frames} • пропуски: {dropped}")
             };
             set_status(&label);
         }
@@ -626,7 +633,15 @@ mod app {
                     ID_START => { start_capture(false); 0 }
                     ID_OVERLAY => { start_capture(true); 0 }
                     ID_STOP => { stop_preview(); 0 }
-                    ID_PROFILE | ID_WINDOW_LIST if notification == CBN_SELCHANGE => {
+                    ID_PROFILE if notification == CBN_SELCHANGE => {
+                        update_resolution_label();
+                        if !CAPTURE_HANDLE.is_null() {
+                            es_capture_set_mode(CAPTURE_HANDLE, selected_profile() as u32);
+                            set_status("Профиль переключён без перезапуска захвата.");
+                        }
+                        0
+                    }
+                    ID_WINDOW_LIST if notification == CBN_SELCHANGE => {
                         update_resolution_label();
                         0
                     }
