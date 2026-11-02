@@ -49,6 +49,16 @@ While preview is running, the main window reports:
 
 The GPU timer uses a small fixed set of timestamp queries and never performs a blocking readback. DXGI back-pressure is counted rather than waited on, and hidden callbacks are tracked separately. All statistics remain diagnostic: output FPS is not the game's FPS.
 
+## Crash diagnostics
+
+The application installs a process-level unhandled-exception filter before GPU probing. If the process terminates because of an unhandled native exception, it attempts to write a Windows minidump and a small text summary under:
+
+    %LOCALAPPDATA%\EndScaling\crashes
+
+The text file records the exception code, faulting address, process/thread IDs, and local timestamp. The dump contains the exception context and thread information for later inspection in a debugger. A dump is diagnostic evidence, not a fix by itself; ordinary C++/WinRT exceptions handled by the application do not create crash dumps.
+
+Crash dumps can contain fragments of application and window memory. Review them before sharing publicly; send them privately only when needed for debugging.
+
 ## Build on Windows
 
 Requirements:
