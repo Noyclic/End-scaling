@@ -659,15 +659,15 @@ mod app {
                     format!("HRESULT 0x{:08X}.", last_error as u32)
                 };
                 set_status(&format!(
-                    "Захват остановлен: графическое устройство потеряно или конвейер завершил работу. {error_suffix}\\nНажми «Остановить», затем запусти захват снова."
+                    "Захват остановлен: графическое устройство потеряно или конвейер завершил работу. {error_suffix}\nНажми «Остановить», затем запусти захват снова."
                 ));
                 return;
             }
 
             let label = if OVERLAY_MODE {
-                format!("Оверлей: {preview_fps:.1} FPS • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\\nКадры: {frames} • пропуски: {dropped} • скрыто: {inactive}")
+                format!("Оверлей: {preview_fps:.1} FPS • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\nКадры: {frames} • пропуски: {dropped} • скрыто: {inactive}")
             } else {
-                format!("Вывод: {preview_fps:.1} FPS • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\\nКадры: {frames} • пропуски: {dropped}")
+                format!("Вывод: {preview_fps:.1} FPS • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\nКадры: {frames} • пропуски: {dropped}")
             };
             set_status(&label);
         }
