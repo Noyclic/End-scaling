@@ -1135,6 +1135,9 @@ mod app {
 
     pub fn run() {
         unsafe {
+            // Install the process-wide native crash handler before creating
+            // any Win32 windows or initializing Direct3D.
+            let _ = es_core_version();
             SELECTED_PROFILE = load_profile();
             INSTANCE = GetModuleHandleW(null());
             let class_name = wide("EndScalingMainWindow");
@@ -1178,7 +1181,6 @@ mod app {
                 DispatchMessageW(&message);
             }
 
-            let _ = es_core_version();
         }
     }
 
