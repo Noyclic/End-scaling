@@ -3,12 +3,15 @@
 
 #include <atomic>
 #include <cwchar>
+#include <cstdint>
 #include <iterator>
 
 #pragma comment(lib, "Dbghelp.lib")
 
 namespace {
 std::atomic_flag g_dumpInProgress = ATOMIC_FLAG_INIT;
+std::atomic<std::uint64_t> g_stageAndHresult{0};
+std::atomic<DWORD> g_contextThread{0};
 
 LONG WINAPI write_crash_dump(EXCEPTION_POINTERS* exceptionInfo) noexcept {
     if (g_dumpInProgress.test_and_set(std::memory_order_relaxed)) {
@@ -59,17 +62,26 @@ LONG WINAPI write_crash_dump(EXCEPTION_POINTERS* exceptionInfo) noexcept {
     const void* exceptionAddress = exceptionInfo && exceptionInfo->ExceptionRecord
         ? exceptionInfo->ExceptionRecord->ExceptionAddress : nullptr;
 
-    wchar_t details[512]{};
+    const std::uint64_t context = g_stageAndHresult.load(std::memory_order_acquire);
+    const std::uint32_t stage = static_cast<std::uint32_t>(context >> 32);
+    const std::uint32_t detail = static_cast<std::uint32_t>(context & 0xffffffffu);
+    const DWORD contextThread = g_contextThread.load(std::memory_order_acquire);
+
+    wchar_t details[768]{};
     const int detailLength = swprintf_s(
         details,
         L"End-scaling unhandled exception\r\n"
         L"Time: %04u-%02u-%02u %02u:%02u:%02u\r\n"
         L"Process ID: %lu\r\nThread ID: %lu\r\n"
-        L"Exception code: 0x%08lX\r\nException address: %p\r\n",
+        L"Exception code: 0x%08lX\r\nException address: %p\r\n"
+        L"Last native stage: %lu\r\nLast stage HRESULT/detail: 0x%08lX\r\n"
+        L"Last stage thread ID: %lu\r\n",
         now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
         static_cast<unsigned long>(processId),
         static_cast<unsigned long>(threadId),
-        static_cast<unsigned long>(exceptionCode), exceptionAddress);
+        static_cast<unsigned long>(exceptionCode), exceptionAddress,
+        static_cast<unsigned long>(stage), static_cast<unsigned long>(detail),
+        static_cast<unsigned long>(contextThread));
 
     if (detailLength > 0) {
         HANDLE logFile = CreateFileW(
@@ -107,4 +119,13 @@ LONG WINAPI write_crash_dump(EXCEPTION_POINTERS* exceptionInfo) noexcept {
 
 extern "C" void __cdecl es_install_crash_diagnostics() noexcept {
     SetUnhandledExceptionFilter(write_crash_dump);
+}
+
+extern "C" void __cdecl es_crash_set_context(
+    std::uint32_t stage, std::int32_t detail) noexcept {
+    g_contextThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    const std::uint64_t packed =
+        (static_cast<std::uint64_t>(stage) << 32) |
+        static_cast<std::uint32_t>(detail);
+    g_stageAndHresult.store(packed, std::memory_order_release);
 }
