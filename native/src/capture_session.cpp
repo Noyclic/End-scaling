@@ -126,6 +126,7 @@ public:
             outputFps_.store(0.0, std::memory_order_relaxed);
             lastSubmitMs_.store(0.0, std::memory_order_relaxed);
             lastGpuMs_.store(0.0, std::memory_order_relaxed);
+            lastError_.store(S_OK, std::memory_order_relaxed);
             fpsWindowStartedAt_ = std::chrono::steady_clock::now();
             fpsWindowFrames_ = 0;
             wasOutputInactive_ = false;
@@ -169,6 +170,11 @@ public:
         if (frames) *frames = renderedFrames_.load(std::memory_order_relaxed);
         if (dropped) *dropped = droppedFrames_.load(std::memory_order_relaxed);
         if (inactive) *inactive = inactiveFrames_.load(std::memory_order_relaxed);
+    }
+
+    void get_status(int* running, std::int32_t* lastError) const noexcept {
+        if (running) *running = running_.load(std::memory_order_relaxed) ? 1 : 0;
+        if (lastError) *lastError = lastError_.load(std::memory_order_relaxed);
     }
 
 private:
@@ -345,13 +351,18 @@ private:
 
     void record_frame_failure(HRESULT hr) noexcept {
         droppedFrames_.fetch_add(1, std::memory_order_relaxed);
+        lastError_.store(static_cast<std::int32_t>(hr), std::memory_order_relaxed);
+
+        const HRESULT removedReason = device_ ? device_->GetDeviceRemovedReason() : S_OK;
         if (hr == DXGI_ERROR_DEVICE_REMOVED ||
             hr == DXGI_ERROR_DEVICE_RESET ||
             hr == DXGI_ERROR_DEVICE_HUNG ||
-            (device_ && FAILED(device_->GetDeviceRemovedReason()))) {
+            FAILED(removedReason)) {
             // A removed device cannot recover by continuing to submit frames.
-            // Stop the callback path instead of silently spinning on failures.
-            running_ = false;
+            // Keep the HRESULT for the UI and stop the callback path cleanly.
+            const HRESULT reason = FAILED(removedReason) ? removedReason : hr;
+            lastError_.store(static_cast<std::int32_t>(reason), std::memory_order_relaxed);
+            running_.store(false, std::memory_order_relaxed);
         }
     }
 
@@ -506,7 +517,8 @@ private:
     HWND source_ = nullptr;
     HWND output_ = nullptr;
     std::atomic<ScaleMode> mode_{ScaleMode::balanced};
-    bool running_ = false;
+    std::atomic<bool> running_{false};
+    std::atomic<std::int32_t> lastError_{S_OK};
     bool hasHandler_ = false;
     std::mutex mutex_;
     std::chrono::steady_clock::time_point fpsWindowStartedAt_{};
@@ -575,6 +587,15 @@ void get_window_capture_stats(void* handle, double* fps,
     (*capture)->get_stats(fps, lastSubmitMs, gpuMs, frames, dropped, inactive);
 }
 
+void get_window_capture_status(void* handle, int* running,
+                               std::int32_t* lastError) noexcept {
+    if (running) *running = 0;
+    if (lastError) *lastError = E_HANDLE;
+    if (!handle) return;
+    auto* capture = static_cast<std::shared_ptr<WindowCapture>*>(handle);
+    (*capture)->get_status(running, lastError);
+}
+
 void stop_window_capture(void* handle) noexcept {
     if (!handle) return;
     auto* capture = static_cast<std::shared_ptr<WindowCapture>*>(handle);
@@ -606,6 +627,12 @@ extern "C" __declspec(dllexport) int __cdecl es_capture_get_stats(
     std::uint64_t* inactive) noexcept {
     end_scaling::get_window_capture_stats(
         handle, fps, lastSubmitMs, gpuMs, frames, dropped, inactive);
+    return handle != nullptr ? 1 : 0;
+}
+
+extern "C" __declspec(dllexport) int __cdecl es_capture_get_status(
+    void* handle, int* running, std::int32_t* lastError) noexcept {
+    end_scaling::get_window_capture_status(handle, running, lastError);
     return handle != nullptr ? 1 : 0;
 }
 
