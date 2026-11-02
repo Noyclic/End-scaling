@@ -122,6 +122,11 @@ mod app {
             dropped: *mut u64,
             inactive: *mut u64,
         ) -> i32;
+        fn es_capture_get_status(
+            handle: *mut c_void,
+            running: *mut i32,
+            last_error: *mut i32,
+        ) -> i32;
     }
 
     struct WindowEntry {
@@ -644,10 +649,25 @@ mod app {
             &mut dropped,
             &mut inactive,
         ) != 0 {
+            let mut capture_running = 0i32;
+            let mut last_error = 0i32;
+            es_capture_get_status(CAPTURE_HANDLE, &mut capture_running, &mut last_error);
+            if capture_running == 0 {
+                let error_suffix = if last_error == 0 {
+                    String::from("Код ошибки не предоставлен.")
+                } else {
+                    format!("HRESULT 0x{:08X}.", last_error as u32)
+                };
+                set_status(&format!(
+                    "Захват остановлен: графическое устройство потеряно или конвейер завершил работу. {error_suffix}\\nНажми «Остановить», затем запусти захват снова."
+                ));
+                return;
+            }
+
             let label = if OVERLAY_MODE {
-                format!("Оверлей: {preview_fps:.1} FPS • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\nКадры: {frames} • пропуски: {dropped} • скрыто: {inactive}")
+                format!("Оверлей: {preview_fps:.1} FPS • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\\nКадры: {frames} • пропуски: {dropped} • скрыто: {inactive}")
             } else {
-                format!("Вывод: {preview_fps:.1} FPS • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\nКадры: {frames} • пропуски: {dropped}")
+                format!("Вывод: {preview_fps:.1} FPS • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\\nКадры: {frames} • пропуски: {dropped}")
             };
             set_status(&label);
         }
