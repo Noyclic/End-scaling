@@ -25,6 +25,15 @@
 
 using Microsoft::WRL::ComPtr;
 
+extern "C" void __cdecl es_crash_set_context(
+    std::uint32_t stage, std::int32_t detail) noexcept;
+
+namespace {
+void crash_stage(std::uint32_t stage, HRESULT detail = S_OK) noexcept {
+    es_crash_set_context(stage, static_cast<std::int32_t>(detail));
+}
+}
+
 namespace end_scaling {
 namespace {
 
@@ -56,6 +65,7 @@ public:
     HRESULT start(HWND source, HWND output, ScaleMode mode,
                   const wchar_t* shaderPath, std::wstring* error) {
         try {
+            crash_stage(10); // capture start entered
             ApartmentScope apartment;
             if (!GraphicsCaptureSession::IsSupported()) {
                 if (error) *error = L"Windows.Graphics.Capture is not available on this PC.";
@@ -71,27 +81,32 @@ public:
             output_ = output;
             mode_.store(mode, std::memory_order_relaxed);
 
+            crash_stage(11); // create D3D11 device
             HRESULT hr = create_d3d_device();
             if (FAILED(hr)) {
                 if (error) *error = hr_text(L"Hardware Direct3D 11 device creation", hr);
                 return hr;
             }
 
+            crash_stage(12); // create GPU timestamp queries
             hr = create_gpu_timing_queries();
             if (FAILED(hr)) {
                 if (error) *error = hr_text(L"GPU timing query creation", hr);
                 return hr;
             }
 
+            crash_stage(13); // initialize FSR shaders and resources
             hr = scaler_.initialize(device_.Get(), shaderPath, error);
             if (FAILED(hr)) return hr;
 
+            crash_stage(14); // create output swap chain
             hr = create_swap_chain();
             if (FAILED(hr)) {
                 if (error) *error = hr_text(L"Preview swap-chain creation", hr);
                 return hr;
             }
 
+            crash_stage(15); // create GraphicsCaptureItem for source HWND
             auto factory = winrt::get_activation_factory<
                 GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
             winrt::check_hresult(factory->CreateForWindow(
@@ -103,10 +118,12 @@ public:
                 return E_INVALIDARG;
             }
 
+            crash_stage(16); // wrap D3D device for WinRT capture
             winrtDevice_ = make_winrt_device();
             framePool_ = Direct3D11CaptureFramePool::CreateFreeThreaded(
                 winrtDevice_, DirectXPixelFormat::B8G8R8A8UIntNormalized,
                 static_cast<int>(kBufferCount), size_);
+            crash_stage(17); // create capture session
             session_ = framePool_.CreateCaptureSession(item_);
             // The desktop cursor is drawn above the output HWND. Capturing it
             // into the source frame as well would show a duplicated cursor.
@@ -131,7 +148,9 @@ public:
             fpsWindowFrames_ = 0;
             wasOutputInactive_ = false;
             running_ = true;
+            crash_stage(18); // start capture
             session_.StartCapture();
+            crash_stage(19); // capture started
             return S_OK;
         }
         catch (const winrt::hresult_error& exception) {
@@ -350,6 +369,7 @@ private:
 
 
     void record_frame_failure(HRESULT hr) noexcept {
+        crash_stage(195, hr); // a frame operation returned a failed HRESULT
         droppedFrames_.fetch_add(1, std::memory_order_relaxed);
         lastError_.store(static_cast<std::int32_t>(hr), std::memory_order_relaxed);
 
@@ -367,15 +387,18 @@ private:
     }
 
     void on_frame(Direct3D11CaptureFramePool const& sender) noexcept {
+        crash_stage(100); // FrameArrived callback entered
         std::lock_guard<std::mutex> guard(mutex_);
         if (!running_) return;
         try {
             collect_gpu_timings();
+            crash_stage(101); // acquire newest capture frame
             auto frame = sender.TryGetNextFrame();
             if (!frame) return;
 
             // Do not build a latency queue. Consume any waiting frames and render
             // only the freshest frame available in the two-buffer pool.
+            crash_stage(102); // drain queued stale frames
             for (;;) {
                 auto newer = sender.TryGetNextFrame();
                 if (!newer) break;
@@ -401,6 +424,7 @@ private:
                 wasOutputInactive_ = false;
             }
 
+            crash_stage(103); // inspect frame dimensions
             const SizeInt32 content = frame.ContentSize();
             if (content.Width <= 0 || content.Height <= 0) return;
             if (content.Width != size_.Width || content.Height != size_.Height) {
@@ -412,6 +436,7 @@ private:
                 return;
             }
 
+            crash_stage(104); // obtain the D3D interface for the frame surface
             auto dxgiAccess = frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
             ComPtr<ID3D11Texture2D> frameTexture;
             HRESULT hr = dxgiAccess->GetInterface(
@@ -425,11 +450,13 @@ private:
             ComPtr<ID3D11ShaderResourceView> sourceView;
             // The WGC surface is only used while its frame is checked out.
             // Do not keep SRVs to frame-pool textures after returning a frame.
+            crash_stage(105); // create source shader-resource view
             hr = device_->CreateShaderResourceView(frameTexture.Get(), nullptr, &sourceView);
             if (FAILED(hr)) {
                 record_frame_failure(hr);
                 return;
             }
+            crash_stage(106); // resize swap-chain buffers when needed
             hr = resize_output();
             if (FAILED(hr)) {
                 record_frame_failure(hr);
@@ -439,6 +466,7 @@ private:
             GpuTimingSlot* gpuTiming = begin_gpu_timing();
             const ScaleMode activeMode = mode_.load(std::memory_order_relaxed);
             const auto submitStart = std::chrono::steady_clock::now();
+            crash_stage(107); // submit scaling passes to D3D11
             hr = scaler_.draw(sourceView.Get(), backBuffer_.Get(), activeMode,
                 activeMode == ScaleMode::quality ? 0.0f : 1.5f);
             end_gpu_timing(gpuTiming);
@@ -447,6 +475,7 @@ private:
                 return;
             }
 
+            crash_stage(108); // present scaled frame
             const HRESULT present = swapChain_->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
             if (present == DXGI_ERROR_WAS_STILL_DRAWING) {
                 droppedFrames_.fetch_add(1, std::memory_order_relaxed);
@@ -463,6 +492,7 @@ private:
             lastSubmitMs_.store(elapsedMs, std::memory_order_relaxed);
             renderedFrames_.fetch_add(1, std::memory_order_relaxed);
 
+            crash_stage(109); // frame presented successfully
             ++fpsWindowFrames_;
             const double fpsWindowSeconds = std::chrono::duration<double>(
                 presentedAt - fpsWindowStartedAt_).count();
@@ -475,6 +505,7 @@ private:
             }
         }
         catch (...) {
+            crash_stage(190, E_FAIL); // C++ exception was caught inside FrameArrived
             // Never unwind C++ exceptions through a WinRT event callback.
             // Also check whether the D3D device was removed during the failure.
             record_frame_failure(E_FAIL);
@@ -492,18 +523,23 @@ private:
     }
 
     void stop_locked() noexcept {
+        crash_stage(200); // capture shutdown entered
         running_ = false;
         try {
+            crash_stage(201); // remove FrameArrived handler
             if (framePool_ && hasHandler_) {
                 framePool_.FrameArrived(token_);
                 hasHandler_ = false;
             }
+            crash_stage(202); // close capture session
             if (session_) session_.Close();
+            crash_stage(203); // close frame pool
             if (framePool_) framePool_.Close();
         }
         catch (...) {
         }
 
+        crash_stage(204); // release COM and D3D resources
         session_ = nullptr;
         framePool_ = nullptr;
         item_ = nullptr;

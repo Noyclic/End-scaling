@@ -39,6 +39,9 @@ jobs:
           Copy-Item app/target/release/EndScaling.exe dist/
           Copy-Item app/target/release/shaders dist/shaders -Recurse
           Copy-Item app/target/release/third_party dist/third_party -Recurse
+          # Keep matching debug symbols beside the executable for minidump analysis.
+          Get-ChildItem app/target/release, build/native -Filter *.pdb -Recurse -ErrorAction SilentlyContinue |
+            Copy-Item -Destination dist -Force
 
       - name: Upload Windows build
         uses: actions/upload-artifact@v4

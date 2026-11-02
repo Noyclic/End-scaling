@@ -49,6 +49,16 @@ While preview is running, the main window reports:
 
 The GPU timer uses a small fixed set of timestamp queries and never performs a blocking readback. DXGI back-pressure is counted rather than waited on, and hidden callbacks are tracked separately. All statistics remain diagnostic: output FPS is not the game's FPS.
 
+## Crash diagnostics
+
+The application installs a process-level unhandled-exception filter before GPU probing. If the process terminates because of an unhandled native exception, it attempts to write a Windows minidump and a small text summary under:
+
+    %LOCALAPPDATA%\EndScaling\crashes
+
+The text file records the exception code and flags, faulting instruction address and module path when Windows can resolve it, access-violation type/address (0 = read, 1 = write, 8 = execute), process/thread IDs, local timestamp, and the last native operation recorded by the capture pipeline. Stage IDs currently identify startup (1–3), capture initialization (10–19), per-frame processing (100–109), caught callback exceptions (190), failed frame HRESULTs (195), and shutdown/resource release (200–204). The HRESULT/detail field is most useful for stages that return an error. The dump contains the exception context and thread information for later inspection in a debugger. A dump is diagnostic evidence, not a fix by itself; ordinary C++/WinRT exceptions handled by the application do not create crash dumps.
+
+Crash dumps can contain fragments of application and window memory. Review them before sharing publicly; send them privately only when needed for debugging.
+
 ## Build on Windows
 
 Requirements:
@@ -123,3 +133,12 @@ Do not use exclusive-fullscreen or anti-cheat-protected games for this first tes
 - End-to-end game frame-time, latency, and GPU-load measurements are still needed on Intel Iris Xe.
 
 Until the game is demonstrably rendering fewer pixels and these measurements show a net benefit, **no FPS gain is claimed**. Do not test with anti-cheat-protected games yet.
+
+
+## Auto Setup and FSR Fun Mark
+
+The **Автоподбор** action runs an isolated Direct3D 11 hardware benchmark of the exact FSR 1 scaler used by the capture path. It uses a eight-frame synthetic motion scene at 960×540 → 1920×1080, warms up each profile, then measures 24 frames for Quality, Balanced, and Performance. It records GPU timestamp time and CPU submission time separately, together with the adapter name, feature level, system RAM, shared memory and dedicated VRAM reported by DXGI.
+
+Auto Setup recommends the sharpest FSR profile that stays within a 16.67 ms GPU and CPU scaler-submission budget; it falls back to Performance when the FSR profiles exceed that budget. It updates the selected profile but does not resize or otherwise modify the game window. Stop preview/overlay before benchmarking so live capture does not distort the results. The recommendation describes the scaler's isolated cost only and is not a promise of in-game FPS improvement.
+
+**FSR Fun Mark** runs the same repeatable test but only displays the measurements; it does not change the selected profile. The test uses the real D3D11Scaler and its existing FSR 1 EASU + RCAS shaders, not a simulated score. GPU time covers the scaler passes only; it excludes game rendering, desktop composition, and display latency. The benchmark requires a hardware D3D11 adapter and intentionally has no WARP/CPU fallback.

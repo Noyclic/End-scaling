@@ -17,3 +17,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging"
 ] }
+
+[profile.release]
+# Keep a matching PDB so native crash-dump addresses can be symbolized.
+debug = 1

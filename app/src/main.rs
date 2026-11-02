@@ -45,6 +45,8 @@ mod app {
     const ID_OVERLAY: usize = 1007;
     const ID_APPLY_RESOLUTION: usize = 1008;
     const ID_RESTORE_RESOLUTION: usize = 1009;
+    const ID_AUTO_SETUP: usize = 1010;
+    const ID_FUN_MARK: usize = 1011;
     const HOTKEY_EMERGENCY_STOP: i32 = 1;
     const MOD_NOREPEAT: u32 = 0x4000;
     const MOD_CONTROL_ALT: u32 = 0x0003 | MOD_NOREPEAT;
@@ -87,6 +89,7 @@ mod app {
     static mut RESOLUTION_LABEL: HWND = null_mut();
     static mut GPU_LABEL: HWND = null_mut();
     static mut STATUS_LABEL: HWND = null_mut();
+    static mut BENCHMARK_LABEL: HWND = null_mut();
     static mut SELECTED_PROFILE: i32 = 1;
     static mut CAPTURE_HANDLE: *mut c_void = null_mut();
     static mut CAPTURE_SOURCE_HWND: HWND = null_mut();
@@ -99,9 +102,34 @@ mod app {
     static mut ORIGINAL_CLIENT_HEIGHT: i32 = 0;
     static mut ORIGINAL_PROCESS_ID: u32 = 0;
 
+    #[repr(C)]
+    struct FsrBenchmarkResults {
+        gpu_name: [u16; 128],
+        gpu_ms: [f64; 3],
+        cpu_submit_ms: [f64; 3],
+        measured_frames: u32,
+        scene_frames: u32,
+        source_width: u32,
+        source_height: u32,
+        output_width: u32,
+        output_height: u32,
+        feature_level: u32,
+        logical_processors: u32,
+        total_ram_mb: u64,
+        available_ram_mb: u64,
+        dedicated_vram_mb: u64,
+        shared_vram_mb: u64,
+    }
+
     #[link(name = "end_scaling_core", kind = "static")]
     unsafe extern "C" {
         fn es_core_version() -> u32;
+        fn es_run_fsr_benchmark(
+            shader_path: *const u16,
+            results: *mut FsrBenchmarkResults,
+            error_text: *mut u16,
+            error_capacity: i32,
+        ) -> i32;
         fn es_probe_d3d11_gpu(
             shader_path: *const u16,
             gpu_name: *mut u16,
@@ -166,6 +194,15 @@ mod app {
             2 => 0.50,
             _ => 0.67,
         }
+    }
+
+    fn choose_profile(gpu_ms: [f64; 3], cpu_ms: [f64; 3], budget_ms: f64) -> i32 {
+        let fits = |index: usize| {
+            gpu_ms[index].is_finite() && cpu_ms[index].is_finite() &&
+                gpu_ms[index] > 0.0 && cpu_ms[index] > 0.0 &&
+                gpu_ms[index] <= budget_ms && cpu_ms[index] <= budget_ms
+        };
+        if fits(1) { 1 } else if fits(0) { 0 } else { 2 }
     }
 
     fn scale_pointer_coordinate(position: i32, output_extent: i32, source_extent: i32) -> i32 {
@@ -548,6 +585,80 @@ mod app {
             format!("Графическое ядро не готово: {}", from_wide(&error_text))
         };
         SetWindowTextW(GPU_LABEL, wide(&status).as_ptr());
+    }
+
+    unsafe fn run_fsr_benchmark(apply_recommended: bool) {
+        if !CAPTURE_HANDLE.is_null() {
+            set_status("Для точного бенчмарка сначала останови предпросмотр или оверлей.");
+            return;
+        }
+        let Some(shader_path) = current_shader_path() else {
+            set_status("Не найден файл шейдера FSR.");
+            return;
+        };
+        set_status(if apply_recommended {
+            "Автоподбор: запускаю одинаковый GPU-тест для трёх профилей..."
+        } else {
+            "FSR Fun Mark: запускаю тестовую сцену и измеряю FSR 1..."
+        });
+
+        let mut results: FsrBenchmarkResults = std::mem::zeroed();
+        let mut error_text = [0u16; 512];
+        let ok = es_run_fsr_benchmark(
+            shader_path.as_ptr(),
+            &mut results,
+            error_text.as_mut_ptr(),
+            error_text.len() as i32,
+        );
+        if ok != 1 {
+            let message = from_wide(&error_text);
+            let message = if message.is_empty() {
+                "Не удалось выполнить тест FSR.".to_string()
+            } else {
+                message
+            };
+            SetWindowTextW(BENCHMARK_LABEL, wide(&format!("FSR Fun Mark: {message}")).as_ptr());
+            set_status(&message);
+            return;
+        }
+
+        let gpu_name = from_wide(&results.gpu_name);
+        let frame_budget_ms = 1000.0 / 60.0;
+        let recommended = choose_profile(results.gpu_ms, results.cpu_submit_ms, frame_budget_ms);
+        let profile_names = ["Quality", "Balanced", "Performance"];
+        let report = format!(
+            "FSR Fun Mark • {} кадров тестовой сцены • {}×{} → {}×{} • {} кадров замера на профиль\nGPU: {} • CPU: {} • feature level 0x{:X} • RAM: {} MB (доступно {} MB) • VRAM: {} MB dedicated / {} MB shared • {} потоков\nQuality: {:.2} ms GPU / {:.2} ms CPU   |   Balanced: {:.2} / {:.2} ms   |   Performance: {:.2} / {:.2} ms",
+            results.scene_frames, results.source_width, results.source_height,
+            results.output_width, results.output_height, results.measured_frames,
+            gpu_name,
+            env::var("PROCESSOR_IDENTIFIER").unwrap_or_else(|_| "не определён".to_string()),
+            results.feature_level,
+            results.total_ram_mb, results.available_ram_mb,
+            results.dedicated_vram_mb, results.shared_vram_mb, results.logical_processors,
+            results.gpu_ms[0], results.cpu_submit_ms[0],
+            results.gpu_ms[1], results.cpu_submit_ms[1],
+            results.gpu_ms[2], results.cpu_submit_ms[2],
+        );
+        SetWindowTextW(BENCHMARK_LABEL, wide(&report).as_ptr());
+
+        if apply_recommended {
+            SendMessageW(PROFILE_COMBO, CB_SETCURSEL, recommended as WPARAM, 0);
+            SELECTED_PROFILE = recommended;
+            save_profile();
+            let chosen_gpu_ms = results.gpu_ms[recommended as usize];
+            let chosen_cpu_ms = results.cpu_submit_ms[recommended as usize];
+            let budget_note = if chosen_gpu_ms <= frame_budget_ms && chosen_cpu_ms <= frame_budget_ms {
+                "GPU и CPU укладываются в бюджет 60 FPS для скейлера"
+            } else {
+                "скейлер не укладывается в бюджет 60 FPS"
+            };
+            set_status(&format!(
+                "Автоподбор выбрал {}: GPU {:.2} ms / CPU {:.2} ms — {}. Это тест скейлера, не FPS игры.",
+                profile_names[recommended as usize], chosen_gpu_ms, chosen_cpu_ms, budget_note
+            ));
+        } else {
+            set_status("FSR Fun Mark завершён. Профиль не менялся; измерено время только самого скейлера.");
+        }
     }
 
     unsafe fn create_label(parent: HWND, text: &str, x: i32, y: i32, w: i32, h: i32) -> HWND {
@@ -1054,6 +1165,9 @@ mod app {
         create_button(parent, "Остановить", ID_STOP, 24, 410, 140, 34, false);
         create_button(parent, "Применить низкое разрешение", ID_APPLY_RESOLUTION, 24, 455, 250, 34, false);
         create_button(parent, "Вернуть размер", ID_RESTORE_RESOLUTION, 290, 455, 160, 34, false);
+        create_button(parent, "Автоподбор FSR", ID_AUTO_SETUP, 24, 500, 190, 36, true);
+        create_button(parent, "FSR Fun Mark", ID_FUN_MARK, 230, 500, 180, 36, false);
+        BENCHMARK_LABEL = create_label(parent, "Тест ещё не запускался. Fun Mark измеряет встроенный FSR 1 на одинаковой тестовой сцене.", 24, 545, 590, 82);
 
         probe_gpu();
         refresh_window_list();
@@ -1089,6 +1203,8 @@ mod app {
                     ID_OVERLAY => { start_capture(true); 0 }
                     ID_STOP => { stop_preview(); 0 }
                     ID_APPLY_RESOLUTION => { apply_source_resolution(); 0 }
+                    ID_AUTO_SETUP => { run_fsr_benchmark(true); 0 }
+                    ID_FUN_MARK => { run_fsr_benchmark(false); 0 }
                     ID_RESTORE_RESOLUTION => {
                         if restore_source_resolution() {
                             set_status("Исходный размер окна восстановлен.");
@@ -1135,6 +1251,9 @@ mod app {
 
     pub fn run() {
         unsafe {
+            // Install the process-wide native crash handler before creating
+            // any Win32 windows or initializing Direct3D.
+            let _ = es_core_version();
             SELECTED_PROFILE = load_profile();
             INSTANCE = GetModuleHandleW(null());
             let class_name = wide("EndScalingMainWindow");
@@ -1158,7 +1277,7 @@ mod app {
                 0, class_name.as_ptr(), title.as_ptr(),
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
                     WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE,
-                CW_USEDEFAULT, CW_USEDEFAULT, 570, 535,
+                CW_USEDEFAULT, CW_USEDEFAULT, 660, 690,
                 null_mut(), null_mut(), INSTANCE, null(),
             );
             if MAIN_HWND.is_null() {
@@ -1178,16 +1297,30 @@ mod app {
                 DispatchMessageW(&message);
             }
 
-            let _ = es_core_version();
         }
     }
 
     #[cfg(test)]
     mod tests {
         use super::{
-            pack_mouse_coordinates, scale_pointer_coordinate, scaled_client_size,
+            choose_profile, pack_mouse_coordinates, scale_pointer_coordinate, scaled_client_size,
             signed_high_word, signed_low_word,
         };
+
+        #[test]
+        fn auto_setup_prefers_balanced_when_both_timings_fit() {
+            assert_eq!(choose_profile([12.0, 13.0, 3.0], [2.0, 2.5, 1.0], 16.67), 1);
+        }
+
+        #[test]
+        fn auto_setup_uses_quality_when_balanced_exceeds_budget() {
+            assert_eq!(choose_profile([15.0, 18.0, 4.0], [2.0, 2.0, 1.0], 16.67), 0);
+        }
+
+        #[test]
+        fn auto_setup_falls_back_to_performance_when_fsr_is_too_slow() {
+            assert_eq!(choose_profile([19.0, 20.0, 4.0], [3.0, 3.0, 1.0], 16.67), 2);
+        }
 
         #[test]
         fn balanced_profile_scales_and_aligns_dimensions() {
