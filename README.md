@@ -97,6 +97,7 @@ Basic Win32 mouse move, button, and wheel messages are mapped from output coordi
 
 - Start with a normal windowed or borderless-window game; switch back to the game after enabling the overlay.
 - Press **Ctrl+Alt+F9** at any time to stop capture and remove the overlay.
+- If the selected source window closes, End-scaling stops capture and removes the overlay instead of leaving a topmost output window behind.
 - This remains experimental. Only basic Win32 mouse messages are mapped; Raw Input, DirectInput, relative mouse motion, controllers, and games that ignore posted mouse messages are not supported by this path. Run the source application and End-scaling at the same integrity level.
 - Visual alignment, pointer mapping, drag behavior, and keyboard focus still need hands-on testing on Windows 10/11 and the target GPU.
 - Do not use this mode with exclusive-fullscreen or anti-cheat-protected games.
