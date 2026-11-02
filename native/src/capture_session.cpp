@@ -332,12 +332,28 @@ private:
         if (FAILED(hr)) return hr;
         if (current.Width == width && current.Height == height) return S_OK;
 
+        // The immediate context keeps references to bound render targets.
+        // Release the back-buffer binding before ResizeBuffers or DXGI may
+        // reject the resize with DXGI_ERROR_INVALID_CALL.
+        context_->OMSetRenderTargets(0, nullptr, nullptr);
         backBuffer_.Reset();
         hr = swapChain_->ResizeBuffers(2, width, height, kPixelFormat, 0);
         if (FAILED(hr)) return hr;
         return create_back_buffer();
     }
 
+
+    void record_frame_failure(HRESULT hr) noexcept {
+        droppedFrames_.fetch_add(1, std::memory_order_relaxed);
+        if (hr == DXGI_ERROR_DEVICE_REMOVED ||
+            hr == DXGI_ERROR_DEVICE_RESET ||
+            hr == DXGI_ERROR_DEVICE_HUNG ||
+            (device_ && FAILED(device_->GetDeviceRemovedReason()))) {
+            // A removed device cannot recover by continuing to submit frames.
+            // Stop the callback path instead of silently spinning on failures.
+            running_ = false;
+        }
+    }
 
     void on_frame(Direct3D11CaptureFramePool const& sender) noexcept {
         std::lock_guard<std::mutex> guard(mutex_);
@@ -390,13 +406,24 @@ private:
             HRESULT hr = dxgiAccess->GetInterface(
                 __uuidof(ID3D11Texture2D),
                 reinterpret_cast<void**>(frameTexture.GetAddressOf()));
-            if (FAILED(hr)) return;
+            if (FAILED(hr)) {
+                record_frame_failure(hr);
+                return;
+            }
 
             ComPtr<ID3D11ShaderResourceView> sourceView;
             // The WGC surface is only used while its frame is checked out.
             // Do not keep SRVs to frame-pool textures after returning a frame.
-            if (FAILED(device_->CreateShaderResourceView(frameTexture.Get(), nullptr, &sourceView))) return;
-            if (FAILED(resize_output())) return;
+            hr = device_->CreateShaderResourceView(frameTexture.Get(), nullptr, &sourceView);
+            if (FAILED(hr)) {
+                record_frame_failure(hr);
+                return;
+            }
+            hr = resize_output();
+            if (FAILED(hr)) {
+                record_frame_failure(hr);
+                return;
+            }
 
             GpuTimingSlot* gpuTiming = begin_gpu_timing();
             const ScaleMode activeMode = mode_.load(std::memory_order_relaxed);
@@ -404,7 +431,10 @@ private:
             hr = scaler_.draw(sourceView.Get(), backBuffer_.Get(), activeMode,
                 activeMode == ScaleMode::quality ? 0.0f : 1.5f);
             end_gpu_timing(gpuTiming);
-            if (FAILED(hr)) return;
+            if (FAILED(hr)) {
+                record_frame_failure(hr);
+                return;
+            }
 
             const HRESULT present = swapChain_->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
             if (present == DXGI_ERROR_WAS_STILL_DRAWING) {
@@ -412,10 +442,7 @@ private:
                 return;
             }
             if (FAILED(present)) {
-                droppedFrames_.fetch_add(1, std::memory_order_relaxed);
-                if (present == DXGI_ERROR_DEVICE_REMOVED || present == DXGI_ERROR_DEVICE_RESET) {
-                    running_ = false;
-                }
+                record_frame_failure(present);
                 return;
             }
 
@@ -438,6 +465,7 @@ private:
         }
         catch (...) {
             // Never unwind C++ exceptions through a WinRT event callback.
+            droppedFrames_.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
