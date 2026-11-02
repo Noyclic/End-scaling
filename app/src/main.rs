@@ -8,15 +8,15 @@ mod app {
     };
 
     use windows_sys::Win32::{
-        UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey},
+        UI::Input::KeyboardAndMouse::{GetCapture, RegisterHotKey, ReleaseCapture, SetCapture, UnregisterHotKey},
         Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{ClientToScreen, GetStockObject, HBRUSH, BLACK_BRUSH, WHITE_BRUSH},
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentProcessId},
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows,
-            GetCapture, GetClientRect, GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
+            GetClientRect, GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
             GetWindowThreadProcessId, GetWindowRect, GetForegroundWindow, IsIconic, IsZoomed, IsWindow,
-            IsWindowVisible, KillTimer, PostMessageW, PostQuitMessage, RegisterClassW, ReleaseCapture, SendMessageW, SetCapture,
+            IsWindowVisible, KillTimer, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
             SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
             TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HWND_TOPMOST, MSG,
             SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, WNDCLASSW,
