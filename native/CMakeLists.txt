@@ -10,6 +10,7 @@ add_library(end_scaling_core STATIC
     src/capture_session.cpp
     src/es_api.cpp
     src/crash_diagnostics.cpp
+    src/fsr_benchmark.cpp
 )
 target_include_directories(end_scaling_core PUBLIC include PRIVATE third_party/amd_fsr1)
 target_compile_features(end_scaling_core PUBLIC cxx_std_20)

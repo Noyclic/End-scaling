@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include "end_scaling/d3d11_scaler.hpp"
+#include "end_scaling/fsr_benchmark.hpp"
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -89,3 +90,25 @@ __declspec(dllexport) int __cdecl es_probe_d3d11_gpu(
 }
 
 } // extern "C"
+
+extern "C" __declspec(dllexport) int __cdecl es_run_fsr_benchmark(
+    const wchar_t* shaderPath,
+    end_scaling::FsrBenchmarkResults* results,
+    wchar_t* errorText,
+    int errorCapacity) noexcept {
+    es_install_crash_diagnostics();
+    es_crash_set_context(250, S_OK); // isolated FSR test entered
+    std::wstring error;
+    const HRESULT hr = end_scaling::run_fsr_benchmark(shaderPath, results, &error);
+    if (FAILED(hr)) {
+        es_crash_set_context(251, hr);
+        if (errorText && errorCapacity > 0) {
+            wcsncpy_s(errorText, static_cast<std::size_t>(errorCapacity),
+                      error.c_str(), _TRUNCATE);
+        }
+        return 0;
+    }
+    es_crash_set_context(252, S_OK); // benchmark completed
+    if (errorText && errorCapacity > 0) errorText[0] = L'\0';
+    return 1;
+}
