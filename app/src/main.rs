@@ -9,7 +9,7 @@ mod app {
 
     use windows_sys::Win32::{
         Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::Gdi::{GetStockObject, SetLayeredWindowAttributes, HBRUSH, BLACK_BRUSH, WHITE_BRUSH, LWA_ALPHA},
+        Graphics::Gdi::{GetStockObject, HBRUSH, BLACK_BRUSH, WHITE_BRUSH},
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentProcessId},
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows,
@@ -353,9 +353,12 @@ mod app {
             &mut submit_ms,
             &mut frames,
         ) != 0 {
-            set_status(&format!(
-                "Предпросмотр: {preview_fps:.1} FPS  •  CPU submit: {submit_ms:.2} ms  •  кадров: {frames}"
-            ));
+            let label = if OVERLAY_MODE {
+                format!("Оверлей: {preview_fps:.1} FPS вывода  •  CPU submit: {submit_ms:.2} ms  •  кадров: {frames}")
+            } else {
+                format!("Предпросмотр: {preview_fps:.1} FPS  •  CPU submit: {submit_ms:.2} ms  •  кадров: {frames}")
+            };
+            set_status(&label);
         }
     }
 
@@ -407,15 +410,22 @@ mod app {
             return;
         }
 
-        SetWindowPos(
-            PREVIEW_HWND,
-            HWND_TOPMOST,
-            rect.left,
-            rect.top,
-            width,
-            height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        );
+        let mut current = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let already_aligned = IsWindowVisible(PREVIEW_HWND) != 0 &&
+            GetWindowRect(PREVIEW_HWND, &mut current) != 0 &&
+            current.left == rect.left && current.top == rect.top &&
+            current.right == rect.right && current.bottom == rect.bottom;
+        if !already_aligned {
+            SetWindowPos(
+                PREVIEW_HWND,
+                HWND_TOPMOST,
+                rect.left,
+                rect.top,
+                width,
+                height,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+        }
     }
 
     unsafe fn create_output_window(overlay: bool, source: HWND) -> HWND {
@@ -457,10 +467,11 @@ mod app {
             }
         }
 
-        // WS_EX_TRANSPARENT on a layered window passes pointer input to the
-        // window underneath. F9 is registered globally as an emergency stop.
+        // Keep the flip-model HWND path (no layered redirection surface).
+        // WS_EX_TRANSPARENT is used for click-through on the Win10+ desktop path.
+        // F9 is registered globally as an emergency stop.
         let extended_style = if overlay {
-            0x00000008 | 0x00000020 | 0x00080000 | 0x00000080 | 0x08000000
+            0x00000008 | 0x00000020 | 0x00000080 | 0x08000000
         } else {
             0
         };
@@ -476,15 +487,8 @@ mod app {
             style, x, y, width, height,
             null_mut(), null_mut(), INSTANCE, null(),
         );
-        if !hwnd.is_null() {
-            if overlay {
-                if SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA) == 0 {
-                    DestroyWindow(hwnd);
-                    return null_mut();
-                }
-            } else {
-                ShowWindow(hwnd, SW_SHOW);
-            }
+        if !hwnd.is_null() && !overlay {
+            ShowWindow(hwnd, SW_SHOW);
         }
         hwnd
     }
@@ -509,11 +513,15 @@ mod app {
         OVERLAY_MODE = overlay;
         PREVIEW_HWND = create_output_window(overlay, source);
         if PREVIEW_HWND.is_null() {
-            set_status("Не удалось создать окно предпросмотра.");
+            OVERLAY_MODE = false;
+            CAPTURE_SOURCE_HWND = null_mut();
+            set_status("Не удалось создать окно вывода.");
             return;
         }
 
         let Some(shader_path) = current_shader_path() else {
+            OVERLAY_MODE = false;
+            CAPTURE_SOURCE_HWND = null_mut();
             set_status("Не найден файл шейдера FSR.");
             DestroyWindow(PREVIEW_HWND);
             return;
@@ -525,6 +533,8 @@ mod app {
         );
 
         if CAPTURE_HANDLE.is_null() {
+            OVERLAY_MODE = false;
+            CAPTURE_SOURCE_HWND = null_mut();
             set_status(&format!("Не удалось запустить захват: {}", from_wide(&error_text)));
             DestroyWindow(PREVIEW_HWND);
             return;
@@ -659,7 +669,7 @@ mod app {
                 0, class_name.as_ptr(), title.as_ptr(),
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
                     WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE,
-                CW_USEDEFAULT, CW_USEDEFAULT, 570, 465,
+                CW_USEDEFAULT, CW_USEDEFAULT, 570, 500,
                 null_mut(), null_mut(), INSTANCE, null(),
             );
             if MAIN_HWND.is_null() {
