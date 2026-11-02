@@ -634,6 +634,11 @@ mod app {
         if CAPTURE_HANDLE.is_null() {
             return;
         }
+        if CAPTURE_SOURCE_HWND.is_null() || IsWindow(CAPTURE_SOURCE_HWND) == 0 {
+            stop_preview();
+            set_status("Исходное окно игры или приложения закрыто. Захват остановлен.");
+            return;
+        }
         let mut preview_fps = 0.0f64;
         let mut submit_ms = 0.0f64;
         let mut gpu_ms = 0.0f64;
@@ -733,8 +738,12 @@ mod app {
     }
 
     unsafe fn update_overlay_position() {
-        if !OVERLAY_MODE || PREVIEW_HWND.is_null() || CAPTURE_SOURCE_HWND.is_null() ||
-            IsWindow(PREVIEW_HWND) == 0 || IsWindow(CAPTURE_SOURCE_HWND) == 0 {
+        if !OVERLAY_MODE || PREVIEW_HWND.is_null() || IsWindow(PREVIEW_HWND) == 0 {
+            return;
+        }
+        if CAPTURE_SOURCE_HWND.is_null() || IsWindow(CAPTURE_SOURCE_HWND) == 0 {
+            stop_preview();
+            set_status("Исходное окно игры закрыто. Захват и оверлей остановлены.");
             return;
         }
 
