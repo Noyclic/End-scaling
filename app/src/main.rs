@@ -672,16 +672,20 @@ mod app {
                 } else {
                     format!("HRESULT 0x{:08X}.", last_error as u32)
                 };
+                // Stop the capture and restore the original source-window
+                // size immediately. Leaving a reduced game window behind
+                // after device removal would be surprising and unsafe.
+                stop_preview();
                 set_status(&format!(
-                    "Захват остановлен: графическое устройство потеряно или конвейер завершил работу. {error_suffix}\nНажми «Остановить», затем запусти захват снова."
+                    "Графическое устройство потеряно; оверлей закрыт, исходный размер окна восстановлен. {error_suffix}"
                 ));
                 return;
             }
 
             let label = if OVERLAY_MODE {
-                format!("Оверлей: {preview_fps:.1} FPS • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\nКадры: {frames} • пропуски: {dropped} • скрыто: {inactive}")
+                format!("Оверлей: {preview_fps:.1} FPS вывода (не игры) • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\nКадры: {frames} • пропуски: {dropped} • скрыто: {inactive}")
             } else {
-                format!("Вывод: {preview_fps:.1} FPS • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\nКадры: {frames} • пропуски: {dropped}")
+                format!("Предпросмотр: {preview_fps:.1} FPS вывода (не игры) • GPU {gpu_ms:.2} ms • CPU {submit_ms:.2} ms\nКадры: {frames} • пропуски: {dropped}")
             };
             set_status(&label);
         }
