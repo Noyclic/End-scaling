@@ -476,7 +476,8 @@ private:
         }
         catch (...) {
             // Never unwind C++ exceptions through a WinRT event callback.
-            droppedFrames_.fetch_add(1, std::memory_order_relaxed);
+            // Also check whether the D3D device was removed during the failure.
+            record_frame_failure(E_FAIL);
         }
     }
 
